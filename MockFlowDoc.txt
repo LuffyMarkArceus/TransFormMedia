@@ -1,0 +1,46 @@
+                   ┌─────────────────────────────┐
+                   │        React Client         │
+                   │ (User Dashboard, Upload UI) │
+                   └──────────────┬──────────────┘
+                                  │ HTTPS
+                                  ▼
+       ┌──────────────────────────────────────────────────────────┐
+       │                  API Gateway / Load Balancer             │
+       │  (NGINX / Cloudflare)                                    │
+       └──────────────┬───────────────────────────────────────────┘
+                      │ Routes traffic to services
+                      ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │                 Golang Backend (Monolith or Modular)     │
+        │   - Auth Service                                         │
+        │   - Image Management API                                 │
+        │   - Transformation Request API                           │
+        └──────────────┬───────────────────────────────────────────┘
+                       │ Write metadata
+                       ▼
+           ┌────────────────────────────────┐
+           │            Database            │
+           │ (PostgreSQL / NeonDB / MySQL)  │
+           └────────────────────────────────┘
+                       ▲
+                       │
+  ┌────────────────────┴───────────────────────────┐
+  │ Writes job to queue (if using async processing)│
+  ▼                                                  ▼
+┌──────────────────────────────┐         ┌──────────────────────────────┐
+│ Message Queue (Kafka/Rabbit) │         │   Async Workers (Golang)     │
+│ (Optional but scalable)      │◀────────│   - run image processing     │
+└──────────────────────────────┘         └──────────────────────────────┘
+                                                 │ Reads/Writes images
+                                                 ▼
+                                        ┌───────────────────────────┐
+                                        │  Object Storage (S3/R2)   │
+                                        │ Raw + Processed Images    │
+                                        └───────────────────────────┘
+
+
+
+Raw + Processed Images url style:
+- /raw/<userID>/<imageID-orig>.png
+- /processed/<userID>/<imageID>_<operation>_<options>.jpg
+
