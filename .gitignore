@@ -1,4 +1,5 @@
 .directory
 SystemDesignDoc.md
+verify_project.sh
 
 .env

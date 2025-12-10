@@ -17,6 +17,9 @@ type Config struct {
 	R2AccessKey string
 	R2SecretKey string
 	R2Bucket    string
+
+	ClerkApiKey   string
+	ClerkFrontend string
 }
 
 func Load() *Config {

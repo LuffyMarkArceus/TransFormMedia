@@ -1,9 +1,10 @@
 package http
 
 import (
-	"github.com/gin-gonic/gin"
 	"universal-media-service/api"
 	"universal-media-service/internal/config"
+
+	"github.com/gin-gonic/gin"
 )
 
 func NewGinServer(cfg *config.Config) *gin.Engine {
