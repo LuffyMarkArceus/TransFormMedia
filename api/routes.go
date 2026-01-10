@@ -7,9 +7,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(r *gin.Engine, imageHandler *http.ImageHandler) {
+func RegisterRoutes(r *gin.Engine, imageHandler *http.ImageUploadHandler, imageListHandler *http.ImageListHandler) {
 	v1 := r.Group("/api/v1")
 	{
 		v1.POST("/images", auth.ClerkAuthMiddleware(), imageHandler.Upload)
+		v1.GET("/images", auth.ClerkAuthMiddleware(), imageListHandler.List)
 	}
 }

@@ -5,10 +5,12 @@ import (
 	"os"
 
 	"universal-media-service/adapters/http"
+	"universal-media-service/adapters/neondb"
 	"universal-media-service/adapters/r2"
 	"universal-media-service/api"
 	"universal-media-service/core/auth"
-	"universal-media-service/core/image"
+	"universal-media-service/core/media"
+	"universal-media-service/core/upload"
 	"universal-media-service/internal/config"
 
 	"github.com/joho/godotenv"
@@ -44,14 +46,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	db := neondb.New()
 
-	imageService := image.NewImageService(nil, r2Client)
-	imageHandler := http.NewImageHandler(imageService)
+	mediaRepo := media.NewPostgresRepository(db)
+	uploadService := upload.NewService(mediaRepo, r2Client)
+
+	uploadHandler := http.NewImageUploadHandler(uploadService)
+	listHandler := http.NewImageListHandler(mediaRepo)
 
 	router := http.NewGinServer(&config.Config{
 		ServerPort: cfg.ServerPort,
 	})
-	api.RegisterRoutes(router, imageHandler)
+	api.RegisterRoutes(router, uploadHandler, listHandler)
 
 	log.Println("🚀 Server running on port", cfg.ServerPort)
 	if err := router.Run(":" + cfg.ServerPort); err != nil {
