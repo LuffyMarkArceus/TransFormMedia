@@ -8,6 +8,7 @@ import (
 	_ "image/png"
 	"log"
 	"mime/multipart"
+	"net/url"
 	"strings"
 	"time"
 
@@ -128,6 +129,11 @@ func (s *Service) UploadImage(
 	return m, nil
 }
 
+func extractKey(publicURL string) string {
+	u, _ := url.Parse(publicURL)
+	return strings.TrimPrefix(u.Path, "/")
+}
+
 // DeleteImage removes image metadata and file from R2
 func (s *Service) DeleteImage(
 	ctx context.Context,
@@ -143,12 +149,21 @@ func (s *Service) DeleteImage(
 
 	// 2. Extract R2 key from URL
 	// publicURL = https://...r2.dev/raw/userID/filename
-	prefix := s.storage.PublicBase + "/"
-	key := strings.TrimPrefix(img.OriginalURL, prefix)
+	// prefix := s.storage.PublicBase + "/"
+	// key := strings.TrimPrefix(img.OriginalURL, prefix)
 
 	// 3. Delete from R2
-	if err := s.storage.Delete(ctx, key); err != nil {
-		return err
+	if img.OriginalURL != "" {
+		_ = s.storage.Delete(ctx, extractKey(img.OriginalURL))
+		log.Printf("Deleted original image from R2 %s", img.OriginalURL)
+	}
+	if img.ProcessedURL != nil {
+		_ = s.storage.Delete(ctx, extractKey(*img.ProcessedURL))
+		log.Printf("Deleted processed image from R2 %s", *img.ProcessedURL)
+	}
+	if img.ThumbnailURL != nil {
+		_ = s.storage.Delete(ctx, extractKey(*img.ThumbnailURL))
+		log.Printf("Deleted thumbnail image from R2 %s", *img.ThumbnailURL)
 	}
 
 	// 4. Delete DB row

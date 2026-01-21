@@ -27,19 +27,23 @@ func (r *PostgresRepository) Create(
 	  name,
       type,
       original_url,
+	  processed_url,
+	  thumbnail_url,
       format,
       size_bytes,
 	  width,
 	  height,
       status,
       created_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     `,
 		m.ID,
 		m.UserID,
 		m.Name,
 		m.Type,
 		m.OriginalURL,
+		m.ProcessedURL,
+		m.ThumbnailURL,
 		m.Format,
 		m.SizeBytes,
 		m.Width,
@@ -52,7 +56,7 @@ func (r *PostgresRepository) Create(
 
 func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]Media, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, user_id, name, type, original_url, format, size_bytes, width, height, status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, status, created_at
 		 FROM media
 		 WHERE user_id=$1 AND type='image'
 		 ORDER BY created_at DESC`,
@@ -72,6 +76,8 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 			&img.Name,
 			&img.Type,
 			&img.OriginalURL,
+			&img.ProcessedURL,
+			&img.ThumbnailURL,
 			&img.Format,
 			&img.SizeBytes,
 			&img.Width,
@@ -89,7 +95,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string, userID stri
 	var img Media
 
 	err := r.db.QueryRow(ctx,
-		`SELECT id, user_id, name, type, original_url, format, size_bytes, width, height, status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, status, created_at
 		 FROM media
 		 WHERE id=$1 AND user_id=$2`,
 		id,
@@ -100,6 +106,8 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string, userID stri
 		&img.Name,
 		&img.Type,
 		&img.OriginalURL,
+		&img.ProcessedURL,
+		&img.ThumbnailURL,
 		&img.Format,
 		&img.SizeBytes,
 		&img.Width,
