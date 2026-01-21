@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	_ "image/jpeg"
+	_ "image/png"
+	"log"
 	"mime/multipart"
 	"strings"
 	"time"
@@ -34,43 +37,88 @@ func (s *Service) UploadImage(
 	size int64,
 ) (*media.Media, error) {
 
+	// ---------- Read file into memory ----------
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(file); err != nil {
 		return nil, fmt.Errorf("Failed to read file %w", err)
 	}
-	data := buf.Bytes()
+	originalBytes := buf.Bytes()
 
-	// Decode image to get dimensions
-	img, err := imaging.Decode(bytes.NewReader(data))
+	// ---------- Decode image to get dimensions ----------
+	img, err := imaging.Decode(bytes.NewReader(originalBytes))
 	if err != nil {
 		return nil, fmt.Errorf("Invalid Image, Failed to decode image %w", err)
 	}
 	width := img.Bounds().Dx()
 	height := img.Bounds().Dy()
 
-	key := fmt.Sprintf("raw/%s/%s", userID, filename)
+	// ---------- Keys ----------
+	rawKey := fmt.Sprintf("raw/%s/%s", userID, filename)
+	processedKey := fmt.Sprintf("processed/%s/%s", userID, filename)
+	thumbnailKey := fmt.Sprintf("thumbnail/%s/%s", userID, filename)
 
-	// Upload to R2 key for the object
-	_, err = s.storage.Upload(ctx, key, bytes.NewReader(data), contentType)
+	// ---------- Upload original ----------
+	_, err = s.storage.Upload(ctx, rawKey, bytes.NewReader(originalBytes), contentType)
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("Uploaded original image to R2 %s", rawKey)
 
-	// Construct public URL for frontend
-	publicURL := fmt.Sprintf("%s/%s/%s", s.storage.PublicBase, "raw/"+userID, filename)
+	// ---------- Processed image (max 1920 x 1080) ----------
+	processedImg := imaging.Fit(img, 1920, 1080, imaging.Lanczos)
+
+	var processedBuf bytes.Buffer
+	if err := imaging.Encode(&processedBuf, processedImg, imaging.JPEG); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.storage.Upload(
+		ctx,
+		processedKey,
+		bytes.NewReader(processedBuf.Bytes()),
+		"image/jpeg",
+	); err != nil {
+		return nil, err
+	}
+	// log.Println("Uploaded processed image to R2")
+
+	// ---------- Thumbnail (320 x 320 center crop) ----------
+	thumbImg := imaging.Fit(img, 320, 180, imaging.Lanczos)
+
+	var thumbBuf bytes.Buffer
+	if err := imaging.Encode(&thumbBuf, thumbImg, imaging.JPEG); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.storage.Upload(
+		ctx,
+		thumbnailKey,
+		bytes.NewReader(thumbBuf.Bytes()),
+		"image/jpeg",
+	); err != nil {
+		return nil, err
+	}
+	// log.Println("Uploaded thumbnail image to R2")
+
+	// ---------- Construct public URL for frontend ----------
+	originalURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, rawKey)
+	processedURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, processedKey)
+	thumbnailURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, thumbnailKey)
 
 	m := &media.Media{
-		ID:          uuid.NewString(),
-		UserID:      userID,
-		Name:        filename,
-		Type:        "image",
-		OriginalURL: publicURL,
-		Format:      contentType,
-		SizeBytes:   size,
-		Width:       width,
-		Height:      height,
-		Status:      "uploaded",
-		CreatedAt:   time.Now(),
+		ID:           uuid.NewString(),
+		UserID:       userID,
+		Name:         filename,
+		Type:         "image",
+		OriginalURL:  originalURL,
+		ProcessedURL: &processedURL,
+		ThumbnailURL: &thumbnailURL,
+		Format:       contentType,
+		SizeBytes:    size,
+		Width:        width,
+		Height:       height,
+		Status:       "uploaded",
+		CreatedAt:    time.Now(),
 	}
 
 	if err := s.repo.Create(ctx, m); err != nil {

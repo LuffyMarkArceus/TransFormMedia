@@ -11,6 +11,7 @@ type Media struct {
 
 	OriginalURL  string  `json:"originalURL"`
 	ProcessedURL *string `json:"processedURL,omitempty"`
+	ThumbnailURL *string `json:"thumbnailURL,omitempty"`
 
 	Format    string `json:"format"`
 	SizeBytes int64  `json:"sizeBytes"`
