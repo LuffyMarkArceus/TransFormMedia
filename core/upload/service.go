@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"mime/multipart"
@@ -10,6 +11,7 @@ import (
 	"universal-media-service/adapters/r2"
 	"universal-media-service/core/media"
 
+	"github.com/disintegration/imaging"
 	"github.com/google/uuid"
 )
 
@@ -32,10 +34,24 @@ func (s *Service) UploadImage(
 	size int64,
 ) (*media.Media, error) {
 
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(file); err != nil {
+		return nil, fmt.Errorf("Failed to read file %w", err)
+	}
+	data := buf.Bytes()
+
+	// Decode image to get dimensions
+	img, err := imaging.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("Invalid Image, Failed to decode image %w", err)
+	}
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+
 	key := fmt.Sprintf("raw/%s/%s", userID, filename)
 
 	// Upload to R2 key for the object
-	_, err := s.storage.Upload(ctx, key, file, contentType)
+	_, err = s.storage.Upload(ctx, key, bytes.NewReader(data), contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +67,8 @@ func (s *Service) UploadImage(
 		OriginalURL: publicURL,
 		Format:      contentType,
 		SizeBytes:   size,
+		Width:       width,
+		Height:      height,
 		Status:      "uploaded",
 		CreatedAt:   time.Now(),
 	}

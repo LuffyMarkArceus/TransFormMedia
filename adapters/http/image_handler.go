@@ -18,6 +18,10 @@ type ImageListHandler struct {
 	repo media.Repository
 }
 
+type RenameImageRequest struct {
+	Name string `json:"name"`
+}
+
 func NewImageUploadHandler(service *upload.Service) *ImageUploadHandler {
 	return &ImageUploadHandler{service: service}
 }
@@ -90,4 +94,27 @@ func (h *ImageUploadHandler) Delete(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "image deleted successfully"})
+}
+
+func (h *ImageListHandler) Rename(c *gin.Context) {
+	userID := c.GetString("userID")
+	imageID := c.Param("id")
+
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req RenameImageRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	if err := h.repo.UpdateName(c.Request.Context(), imageID, userID, req.Name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "image renamed successfully"})
 }

@@ -14,8 +14,8 @@ type Media struct {
 
 	Format    string `json:"format"`
 	SizeBytes int64  `json:"sizeBytes"`
-	// Width     int    `json:"width"`
-	// Height    int    `json:"height"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
 
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
