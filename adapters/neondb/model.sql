@@ -3,6 +3,7 @@ CREATE TABLE media (
 
     user_id TEXT NOT NULL,         -- Clerk user ID
     type TEXT NOT NULL,            -- image | video | audio | text
+    name TEXT NOT NULL,
 
     original_url TEXT NOT NULL,
     processed_url TEXT,

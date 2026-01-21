@@ -31,7 +31,7 @@ func (r *PostgresRepository) Create(
       size_bytes,
       status,
       created_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8, $9)
     `,
 		m.ID,
 		m.UserID,

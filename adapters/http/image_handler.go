@@ -1,6 +1,8 @@
 package http
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
@@ -49,6 +51,7 @@ func (h *ImageUploadHandler) Upload(c *gin.Context) {
 		fileHeader.Size,
 	)
 	if err != nil {
+		log.Printf("%s", fmt.Sprintf("Upload Error :%v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
