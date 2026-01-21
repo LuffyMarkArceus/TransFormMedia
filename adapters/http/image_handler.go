@@ -74,3 +74,20 @@ func (h *ImageListHandler) List(c *gin.Context) {
 
 	c.JSON(http.StatusOK, images)
 }
+
+func (h *ImageUploadHandler) Delete(c *gin.Context) {
+	userID := c.GetString("userID")
+	imageID := c.Param("id")
+
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if err := h.service.DeleteImage(c.Request.Context(), imageID, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "image deleted successfully"})
+}

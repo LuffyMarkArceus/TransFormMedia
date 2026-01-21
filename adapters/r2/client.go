@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -72,4 +73,12 @@ func (c *Client) Upload(ctx context.Context, key string, file io.Reader, content
 
 	// return the private URL if needed (not used by frontend)
 	return fmt.Sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", c.bucket, c.bucket, key), nil
+}
+
+func (c *Client) Delete(ctx context.Context, key string) error {
+	_, err := c.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	return err
 }

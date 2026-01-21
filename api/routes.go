@@ -12,5 +12,7 @@ func RegisterRoutes(r *gin.Engine, imageHandler *http.ImageUploadHandler, imageL
 	{
 		v1.POST("/images", auth.ClerkAuthMiddleware(), imageHandler.Upload)
 		v1.GET("/images", auth.ClerkAuthMiddleware(), imageListHandler.List)
+		v1.DELETE("/images/:id", auth.ClerkAuthMiddleware(), imageHandler.Delete)
+
 	}
 }

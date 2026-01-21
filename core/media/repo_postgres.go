@@ -79,18 +79,20 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 	return images, nil
 }
 
-func (r *PostgresRepository) GetByID(ctx context.Context, id, userID string) (*Media, error) {
+func (r *PostgresRepository) GetByID(ctx context.Context, id string, userID string) (*Media, error) {
 	var img Media
 
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, original_url, format, size_bytes, created_at
+		`SELECT id, user_id, name, type, original_url, format, size_bytes, created_at
 		 FROM media
 		 WHERE id=$1 AND user_id=$2`,
 		id,
 		userID,
 	).Scan(
 		&img.ID,
+		&img.UserID,
 		&img.Name,
+		&img.Type,
 		&img.OriginalURL,
 		&img.Format,
 		&img.SizeBytes,
@@ -102,4 +104,14 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id, userID string) (*M
 	}
 
 	return &img, nil
+}
+
+func (r *PostgresRepository) DeleteByID(ctx context.Context, id string, userID string) error {
+	_, err := r.db.Exec(ctx,
+		`DELETE FROM media
+		 WHERE id=$1 AND user_id=$2`,
+		id,
+		userID,
+	)
+	return err
 }

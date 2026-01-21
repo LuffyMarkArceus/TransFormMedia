@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"mime/multipart"
+	"strings"
 	"time"
 
 	"universal-media-service/adapters/r2"
@@ -59,4 +60,31 @@ func (s *Service) UploadImage(
 	}
 
 	return m, nil
+}
+
+// DeleteImage removes image metadata and file from R2
+func (s *Service) DeleteImage(
+	ctx context.Context,
+	imageID string,
+	userID string,
+) error {
+
+	// 1. Fetch image
+	img, err := s.repo.GetByID(ctx, imageID, userID)
+	if err != nil {
+		return err
+	}
+
+	// 2. Extract R2 key from URL
+	// publicURL = https://...r2.dev/raw/userID/filename
+	prefix := s.storage.PublicBase + "/"
+	key := strings.TrimPrefix(img.OriginalURL, prefix)
+
+	// 3. Delete from R2
+	if err := s.storage.Delete(ctx, key); err != nil {
+		return err
+	}
+
+	// 4. Delete DB row
+	return s.repo.DeleteByID(ctx, imageID, userID)
 }
