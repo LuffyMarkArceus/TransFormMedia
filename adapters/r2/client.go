@@ -1,6 +1,7 @@
 package r2
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -81,4 +82,22 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+// Fetch a file from R2 as bytes
+func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
+	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+
+	buf := new(bytes.Buffer)
+	if _, err := io.Copy(buf, out.Body); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

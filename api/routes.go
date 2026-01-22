@@ -15,5 +15,7 @@ func RegisterRoutes(r *gin.Engine, imageHandler *http.ImageUploadHandler, imageL
 		v1.DELETE("/images/:id", auth.ClerkAuthMiddleware(), imageHandler.Delete)
 		v1.PATCH("/images/:id/rename", auth.ClerkAuthMiddleware(), imageListHandler.Rename)
 
+		v1.GET("/images/:id/process", auth.ClerkAuthMiddleware(), imageListHandler.ServeProcessed)
+
 	}
 }

@@ -52,7 +52,7 @@ func main() {
 	uploadService := upload.NewService(mediaRepo, r2Client)
 
 	uploadHandler := http.NewImageUploadHandler(uploadService)
-	listHandler := http.NewImageListHandler(mediaRepo)
+	listHandler := http.NewImageListHandler(mediaRepo, uploadService)
 
 	router := http.NewGinServer(&config.Config{
 		ServerPort: cfg.ServerPort,

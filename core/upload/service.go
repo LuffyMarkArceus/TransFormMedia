@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	_ "image/jpeg"
-	_ "image/png"
+
 	"log"
 	"mime/multipart"
 	"net/url"
@@ -13,19 +12,19 @@ import (
 	"time"
 
 	"universal-media-service/adapters/r2"
+	"universal-media-service/core/image"
 	"universal-media-service/core/media"
 
-	"github.com/disintegration/imaging"
 	"github.com/google/uuid"
 )
 
 type Service struct {
-	storage *r2.Client
+	Storage *r2.Client
 	repo    media.Repository
 }
 
-func NewService(repo media.Repository, storage *r2.Client) *Service {
-	return &Service{repo: repo, storage: storage}
+func NewService(repo media.Repository, Storage *r2.Client) *Service {
+	return &Service{repo: repo, Storage: Storage}
 }
 
 // Upload Image saves file to R2 and stores metadata
@@ -45,66 +44,55 @@ func (s *Service) UploadImage(
 	}
 	originalBytes := buf.Bytes()
 
-	// ---------- Decode image to get dimensions ----------
-	img, err := imaging.Decode(bytes.NewReader(originalBytes))
+	// ---------- Process Image ----------
+	result, err := image.Process(
+		originalBytes,
+		image.DefaultOptions(),
+		image.DefaultThumbnailOptions(),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("Invalid Image, Failed to decode image %w", err)
+		return nil, fmt.Errorf("Invalid Image, Failed to process image %w", err)
 	}
-	width := img.Bounds().Dx()
-	height := img.Bounds().Dy()
+
+	imageID := uuid.NewString()
+	log.Printf("Processed Image & thumbnail created for %s", imageID)
 
 	// ---------- Keys ----------
-	rawKey := fmt.Sprintf("raw/%s/%s", userID, filename)
-	processedKey := fmt.Sprintf("processed/%s/%s", userID, filename)
-	thumbnailKey := fmt.Sprintf("thumbnail/%s/%s", userID, filename)
+	rawKey := fmt.Sprintf("raw/%s/%s", userID, imageID)
+	processedKey := fmt.Sprintf("processed/%s/%s", userID, imageID)
+	thumbnailKey := fmt.Sprintf("thumbnail/%s/%s", userID, imageID)
 
 	// ---------- Upload original ----------
-	_, err = s.storage.Upload(ctx, rawKey, bytes.NewReader(originalBytes), contentType)
+	_, err = s.Storage.Upload(ctx, rawKey, bytes.NewReader(originalBytes), contentType)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Uploaded original image to R2 %s", rawKey)
 
-	// ---------- Processed image (max 1920 x 1080) ----------
-	processedImg := imaging.Fit(img, 1920, 1080, imaging.Lanczos)
-
-	var processedBuf bytes.Buffer
-	if err := imaging.Encode(&processedBuf, processedImg, imaging.JPEG); err != nil {
-		return nil, err
-	}
-
-	if _, err := s.storage.Upload(
+	// ---------- Upload Processed ----------
+	if _, err := s.Storage.Upload(
 		ctx,
 		processedKey,
-		bytes.NewReader(processedBuf.Bytes()),
-		"image/jpeg",
+		bytes.NewReader(result.ProcessedBytes),
+		result.ProcessedContentType,
 	); err != nil {
 		return nil, err
 	}
-	// log.Println("Uploaded processed image to R2")
 
 	// ---------- Thumbnail (320 x 320 center crop) ----------
-	thumbImg := imaging.Fit(img, 320, 180, imaging.Lanczos)
 
-	var thumbBuf bytes.Buffer
-	if err := imaging.Encode(&thumbBuf, thumbImg, imaging.JPEG); err != nil {
-		return nil, err
-	}
-
-	if _, err := s.storage.Upload(
+	if _, err := s.Storage.Upload(
 		ctx,
 		thumbnailKey,
-		bytes.NewReader(thumbBuf.Bytes()),
-		"image/jpeg",
+		bytes.NewReader(result.ThumbnailBytes),
+		result.ThumbnailContentType,
 	); err != nil {
 		return nil, err
 	}
-	// log.Println("Uploaded thumbnail image to R2")
 
 	// ---------- Construct public URL for frontend ----------
-	originalURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, rawKey)
-	processedURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, processedKey)
-	thumbnailURL := fmt.Sprintf("%s/%s", s.storage.PublicBase, thumbnailKey)
+	originalURL := fmt.Sprintf("%s/%s", s.Storage.PublicBase, rawKey)
+	processedURL := fmt.Sprintf("%s/%s", s.Storage.PublicBase, processedKey)
+	thumbnailURL := fmt.Sprintf("%s/%s", s.Storage.PublicBase, thumbnailKey)
 
 	m := &media.Media{
 		ID:           uuid.NewString(),
@@ -116,8 +104,8 @@ func (s *Service) UploadImage(
 		ThumbnailURL: &thumbnailURL,
 		Format:       contentType,
 		SizeBytes:    size,
-		Width:        width,
-		Height:       height,
+		Width:        result.Width,
+		Height:       result.Height,
 		Status:       "uploaded",
 		CreatedAt:    time.Now(),
 	}
@@ -125,6 +113,8 @@ func (s *Service) UploadImage(
 	if err := s.repo.Create(ctx, m); err != nil {
 		return nil, err
 	}
+
+	log.Printf("Uploaded images for %s (%dx%d)", imageID, result.Width, result.Height)
 
 	return m, nil
 }
@@ -154,15 +144,15 @@ func (s *Service) DeleteImage(
 
 	// 3. Delete from R2
 	if img.OriginalURL != "" {
-		_ = s.storage.Delete(ctx, extractKey(img.OriginalURL))
+		_ = s.Storage.Delete(ctx, extractKey(img.OriginalURL))
 		log.Printf("Deleted original image from R2 %s", img.OriginalURL)
 	}
 	if img.ProcessedURL != nil {
-		_ = s.storage.Delete(ctx, extractKey(*img.ProcessedURL))
+		_ = s.Storage.Delete(ctx, extractKey(*img.ProcessedURL))
 		log.Printf("Deleted processed image from R2 %s", *img.ProcessedURL)
 	}
 	if img.ThumbnailURL != nil {
-		_ = s.storage.Delete(ctx, extractKey(*img.ThumbnailURL))
+		_ = s.Storage.Delete(ctx, extractKey(*img.ThumbnailURL))
 		log.Printf("Deleted thumbnail image from R2 %s", *img.ThumbnailURL)
 	}
 

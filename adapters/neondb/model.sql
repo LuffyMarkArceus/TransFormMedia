@@ -7,6 +7,7 @@ CREATE TABLE media (
 
     original_url TEXT NOT NULL,
     processed_url TEXT,
+    thumnail_url TEXT,
 
     format TEXT,
     size_bytes BIGINT,
