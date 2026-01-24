@@ -8,6 +8,14 @@ const (
 	FormatWebP Format = "webp" // future
 )
 
+const (
+	MaxAllowedWidth  = 4096
+	MaxAllowedHeight = 4096
+
+	MinAllowedQuality = 1
+	MaxAllowedQuality = 100
+)
+
 type ProcessOptions struct {
 	// Resize
 	MaxWidth  int

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,7 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// -------------------- Handlers --------------------
+// -------------------- Handlers Types --------------------
 
 type ImageUploadHandler struct {
 	service *upload.Service
@@ -146,11 +147,6 @@ func (h *ImageListHandler) Rename(c *gin.Context) {
 
 func (h *ImageListHandler) ServeProcessed(c *gin.Context) {
 	userID := c.GetString("userID")
-	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
 	imageID := c.Param("id")
 
 	// 1. Fetch image metadata
@@ -173,22 +169,34 @@ func (h *ImageListHandler) ServeProcessed(c *gin.Context) {
 	// 4. Parse processing options from URL
 	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
 
+	// if processOpts.MaxHeight == 0 && processOpts.MaxWidth == 0 {
+	// 	// No processing requested; serve original
+	// 	return c.Redirect(http.StatusFound, img.OriginalURL)
+	// }
+
 	// 5. Process image dynamically
-	result, err := image.Process(
+	result, contentType, err := image.ProcessSingle(
 		originalBytes,
 		processOpts,
-		image.DefaultThumbnailOptions(), // unused here
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "image processing failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("image processing failed: %v", err.Error())})
 		return
 	}
+
+	log.Printf("Successfully processed %s of size %d", imageID, len(result))
+
+	// Set caching headers & content type
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "inline")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "public, max-age=31536000, immutable") // Cache for 1 year
 
 	// 6. Return processed image
 	c.Data(
 		http.StatusOK,
-		result.ProcessedContentType,
-		result.ProcessedBytes,
+		contentType,
+		result,
 	)
 }
 
@@ -197,7 +205,7 @@ func (h *ImageListHandler) ServeProcessed(c *gin.Context) {
 func extractKey(publicURL string) string {
 	u, err := url.Parse(publicURL)
 	if err != nil {
-		return publicURL
+		return strings.TrimPrefix(publicURL, "/")
 	}
 	return strings.TrimPrefix(u.Path, "/")
 }

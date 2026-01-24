@@ -101,3 +101,32 @@ func encode(
 		return "", fmt.Errorf("unsupported format: %s", format)
 	}
 }
+
+func ProcessSingle(
+	original []byte,
+	opts ProcessOptions,
+) ([]byte, string, error) {
+	// ---- Decode with EXIF auto-orientation ----
+	img, err := imaging.Decode(
+		bytes.NewReader(original),
+		imaging.AutoOrientation(true),
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image failed: %w", err)
+	}
+
+	processed := resize(img, opts.MaxWidth, opts.MaxHeight)
+
+	var processedBuf bytes.Buffer
+	processedCT, err := encode(
+		&processedBuf,
+		processed,
+		opts.Format,
+		opts.Quality,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return processedBuf.Bytes(), processedCT, nil
+}

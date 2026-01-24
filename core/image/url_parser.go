@@ -14,12 +14,18 @@ func ParseProcessOptions(values url.Values) ProcessOptions {
 
 	if w := values.Get("w"); w != "" {
 		if v, err := strconv.Atoi(w); err == nil && v > 0 {
+			if v > MaxAllowedWidth {
+				v = MaxAllowedWidth
+			}
 			opts.MaxWidth = v
 		}
 	}
 
 	if h := values.Get("h"); h != "" {
 		if v, err := strconv.Atoi(h); err == nil && v > 0 {
+			if v > MaxAllowedHeight {
+				v = MaxAllowedHeight
+			}
 			opts.MaxHeight = v
 		}
 	}
@@ -32,11 +38,19 @@ func ParseProcessOptions(values url.Values) ProcessOptions {
 			opts.Format = FormatPNG
 		case "webp":
 			opts.Format = FormatWebP
+		default:
+			// Unsupported format; keep default
+			opts.Format = DefaultOptions().Format
 		}
 	}
 
 	if q := values.Get("q"); q != "" {
 		if v, err := strconv.Atoi(q); err == nil && v > 0 && v <= 100 {
+			if v < MinAllowedQuality {
+				v = MinAllowedQuality
+			} else if v > MaxAllowedQuality {
+				v = MaxAllowedQuality
+			}
 			opts.Quality = v
 		}
 	}
@@ -50,18 +64,29 @@ func ParseThumbnailOptions(values url.Values) ThumbnailOptions {
 
 	if w := values.Get("tw"); w != "" {
 		if v, err := strconv.Atoi(w); err == nil && v > 0 {
+			if v > MaxAllowedWidth {
+				v = MaxAllowedWidth
+			}
 			opts.Width = v
 		}
 	}
 
 	if h := values.Get("th"); h != "" {
 		if v, err := strconv.Atoi(h); err == nil && v > 0 {
+			if v > MaxAllowedHeight {
+				v = MaxAllowedHeight
+			}
 			opts.Height = v
 		}
 	}
 
 	if q := values.Get("tq"); q != "" {
 		if v, err := strconv.Atoi(q); err == nil && v > 0 && v <= 100 {
+			if v < MinAllowedQuality {
+				v = MinAllowedQuality
+			} else if v > MaxAllowedQuality {
+				v = MaxAllowedQuality
+			}
 			opts.Quality = v
 		}
 	}
