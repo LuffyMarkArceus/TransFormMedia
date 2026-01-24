@@ -57,12 +57,37 @@ func (h *ImageUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
+	// ----------- Size Validation ----------
+	const maxFileSize = 50 * 1024 * 1024 // 20 MB
+	if fileHeader.Size > maxFileSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
+		return
+	}
+
 	file, err := fileHeader.Open()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot open file"})
 		return
 	}
 	defer file.Close()
+
+	buf := make([]byte, 512)
+	if _, err := file.Read(buf); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
+		return
+	}
+	file.Seek(0, 0) // Reset read pointer
+
+	mimeType := http.DetectContentType(buf)
+	switch mimeType {
+	case "image/jpeg", "image/jpg":
+		// JPEG image
+	case "image/png":
+		// PNG image
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
+		return
+	}
 
 	img, err := h.service.UploadImage(
 		c.Request.Context(),

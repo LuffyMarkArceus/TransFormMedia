@@ -64,8 +64,8 @@ func ParseThumbnailOptions(values url.Values) ThumbnailOptions {
 
 	if w := values.Get("tw"); w != "" {
 		if v, err := strconv.Atoi(w); err == nil && v > 0 {
-			if v > MaxAllowedWidth {
-				v = MaxAllowedWidth
+			if v > 1280 {
+				v = 1280
 			}
 			opts.Width = v
 		}
@@ -73,8 +73,8 @@ func ParseThumbnailOptions(values url.Values) ThumbnailOptions {
 
 	if h := values.Get("th"); h != "" {
 		if v, err := strconv.Atoi(h); err == nil && v > 0 {
-			if v > MaxAllowedHeight {
-				v = MaxAllowedHeight
+			if v > 720 {
+				v = 720
 			}
 			opts.Height = v
 		}
