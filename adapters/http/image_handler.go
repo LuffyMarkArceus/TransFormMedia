@@ -171,11 +171,10 @@ func (h *ImageListHandler) Rename(c *gin.Context) {
 // -------------------- Dynamic Image Processing --------------------
 
 func (h *ImageListHandler) ServeProcessed(c *gin.Context) {
-	userID := c.GetString("userID")
 	imageID := c.Param("id")
 
 	// 1. Fetch image metadata
-	img, err := h.repo.GetByID(c.Request.Context(), imageID, userID)
+	img, err := h.repo.GetByID(c.Request.Context(), imageID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
 		return

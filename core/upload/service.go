@@ -132,7 +132,7 @@ func (s *Service) DeleteImage(
 ) error {
 
 	// 1. Fetch image
-	img, err := s.repo.GetByID(ctx, imageID, userID)
+	img, err := s.repo.GetByID(ctx, imageID)
 	if err != nil {
 		return err
 	}

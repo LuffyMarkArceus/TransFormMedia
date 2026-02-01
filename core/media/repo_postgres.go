@@ -91,15 +91,14 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 	return images, nil
 }
 
-func (r *PostgresRepository) GetByID(ctx context.Context, id string, userID string) (*Media, error) {
+func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, error) {
 	var img Media
 
 	err := r.db.QueryRow(ctx,
 		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, status, created_at
 		 FROM media
-		 WHERE id=$1 AND user_id=$2`,
+		 WHERE id=$1`,
 		id,
-		userID,
 	).Scan(
 		&img.ID,
 		&img.UserID,
