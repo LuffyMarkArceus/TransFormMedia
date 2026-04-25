@@ -7,15 +7,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(r *gin.Engine, imageHandler *http.ImageUploadHandler, imageListHandler *http.ImageListHandler) {
+func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaListHandler *http.MediaListHandler) {
 	v1 := r.Group("/api/v1")
 	{
-		v1.POST("/images", auth.ClerkAuthMiddleware(), imageHandler.Upload)
-		v1.GET("/images", auth.ClerkAuthMiddleware(), imageListHandler.List)
-		v1.DELETE("/images/:id", auth.ClerkAuthMiddleware(), imageHandler.Delete)
-		v1.PATCH("/images/:id/rename", auth.ClerkAuthMiddleware(), imageListHandler.Rename)
+		v1.POST("/media", auth.ClerkAuthMiddleware(), mediaHandler.Upload)
+		v1.GET("/media", auth.ClerkAuthMiddleware(), mediaListHandler.List)
+		v1.DELETE("/media/:id", auth.ClerkAuthMiddleware(), mediaHandler.Delete)
+		v1.PATCH("/media/:id/rename", auth.ClerkAuthMiddleware(), mediaListHandler.Rename)
 
-		// Public Endpoint
-		v1.GET("/images/:id/process", imageListHandler.ServeProcessed)
+		v1.GET("/media/:id/process", mediaListHandler.ServeProcessed)
 	}
 }

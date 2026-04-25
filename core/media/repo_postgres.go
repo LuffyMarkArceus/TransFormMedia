@@ -21,22 +21,23 @@ func (r *PostgresRepository) Create(
 	_, err := r.db.Exec(
 		ctx,
 		`
-    INSERT INTO media (
-      id,
-      user_id,
-	  name,
-      type,
-      original_url,
-	  processed_url,
-	  thumbnail_url,
-      format,
-      size_bytes,
-	  width,
-	  height,
-      status,
-      created_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-    `,
+		INSERT INTO media (
+			id,
+			user_id,
+			name,
+			type,
+			original_url,
+			processed_url,
+			thumbnail_url,
+			format,
+			size_bytes,
+			width,
+			height,
+			duration_seconds,
+			status,
+			created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		`,
 		m.ID,
 		m.UserID,
 		m.Name,
@@ -48,6 +49,7 @@ func (r *PostgresRepository) Create(
 		m.SizeBytes,
 		m.Width,
 		m.Height,
+		m.Duration,
 		m.Status,
 		m.CreatedAt,
 	)
@@ -56,9 +58,9 @@ func (r *PostgresRepository) Create(
 
 func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]Media, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, duration_seconds, status, created_at
 		 FROM media
-		 WHERE user_id=$1 AND type='image'
+		 WHERE user_id=$1
 		 ORDER BY created_at DESC`,
 		userID,
 	)
@@ -67,59 +69,100 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 	}
 	defer rows.Close()
 
-	var images []Media
+	var mediaItems []Media
 	for rows.Next() {
-		var img Media
+		var m Media
 		rows.Scan(
-			&img.ID,
-			&img.UserID,
-			&img.Name,
-			&img.Type,
-			&img.OriginalURL,
-			&img.ProcessedURL,
-			&img.ThumbnailURL,
-			&img.Format,
-			&img.SizeBytes,
-			&img.Width,
-			&img.Height,
-			&img.Status,
-			&img.CreatedAt,
+			&m.ID,
+			&m.UserID,
+			&m.Name,
+			&m.Type,
+			&m.OriginalURL,
+			&m.ProcessedURL,
+			&m.ThumbnailURL,
+			&m.Format,
+			&m.SizeBytes,
+			&m.Width,
+			&m.Height,
+			&m.Duration,
+			&m.Status,
+			&m.CreatedAt,
 		)
-		images = append(images, img)
+		mediaItems = append(mediaItems, m)
 	}
 
-	return images, nil
+	return mediaItems, nil
+}
+
+func (r *PostgresRepository) ListByUserAndType(ctx context.Context, userID string, mediaType string) ([]Media, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, duration_seconds, status, created_at
+		 FROM media
+		 WHERE user_id=$1 AND type=$2
+		 ORDER BY created_at DESC`,
+		userID,
+		mediaType,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mediaItems []Media
+	for rows.Next() {
+		var m Media
+		rows.Scan(
+			&m.ID,
+			&m.UserID,
+			&m.Name,
+			&m.Type,
+			&m.OriginalURL,
+			&m.ProcessedURL,
+			&m.ThumbnailURL,
+			&m.Format,
+			&m.SizeBytes,
+			&m.Width,
+			&m.Height,
+			&m.Duration,
+			&m.Status,
+			&m.CreatedAt,
+		)
+		mediaItems = append(mediaItems, m)
+	}
+
+	return mediaItems, nil
 }
 
 func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, error) {
-	var img Media
+	var m Media
 
 	err := r.db.QueryRow(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, duration_seconds, status, created_at
 		 FROM media
 		 WHERE id=$1`,
 		id,
 	).Scan(
-		&img.ID,
-		&img.UserID,
-		&img.Name,
-		&img.Type,
-		&img.OriginalURL,
-		&img.ProcessedURL,
-		&img.ThumbnailURL,
-		&img.Format,
-		&img.SizeBytes,
-		&img.Width,
-		&img.Height,
-		&img.Status,
-		&img.CreatedAt,
+		&m.ID,
+		&m.UserID,
+		&m.Name,
+		&m.Type,
+		&m.OriginalURL,
+		&m.ProcessedURL,
+		&m.ThumbnailURL,
+		&m.Format,
+		&m.SizeBytes,
+		&m.Width,
+		&m.Height,
+		&m.Duration,
+		&m.Status,
+		&m.CreatedAt,
 	)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &img, nil
+	return &m, nil
 }
 
 func (r *PostgresRepository) DeleteByID(ctx context.Context, id string, userID string) error {

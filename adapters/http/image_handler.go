@@ -14,37 +14,31 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// -------------------- Handlers Types --------------------
-
-type ImageUploadHandler struct {
+type MediaUploadHandler struct {
 	service *upload.Service
 }
 
-type ImageListHandler struct {
+type MediaListHandler struct {
 	repo    media.Repository
 	service *upload.Service
 }
 
-type RenameImageRequest struct {
+type RenameMediaRequest struct {
 	Name string `json:"name"`
 }
 
-// -------------------- Constructors --------------------
-
-func NewImageUploadHandler(service *upload.Service) *ImageUploadHandler {
-	return &ImageUploadHandler{service: service}
+func NewMediaUploadHandler(service *upload.Service) *MediaUploadHandler {
+	return &MediaUploadHandler{service: service}
 }
 
-func NewImageListHandler(repo media.Repository, service *upload.Service) *ImageListHandler {
-	return &ImageListHandler{
+func NewMediaListHandler(repo media.Repository, service *upload.Service) *MediaListHandler {
+	return &MediaListHandler{
 		repo:    repo,
 		service: service,
 	}
 }
 
-// -------------------- Upload --------------------
-
-func (h *ImageUploadHandler) Upload(c *gin.Context) {
+func (h *MediaUploadHandler) Upload(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -57,8 +51,7 @@ func (h *ImageUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// ----------- Size Validation ----------
-	const maxFileSize = 50 * 1024 * 1024 // 20 MB
+	const maxFileSize = 500 * 1024 * 1024
 	if fileHeader.Size > maxFileSize {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
 		return
@@ -76,20 +69,15 @@ func (h *ImageUploadHandler) Upload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
 		return
 	}
-	file.Seek(0, 0) // Reset read pointer
+	file.Seek(0, 0)
 
 	mimeType := http.DetectContentType(buf)
-	switch mimeType {
-	case "image/jpeg", "image/jpg":
-		// JPEG image
-	case "image/png":
-		// PNG image
-	default:
+	if !isSupportedMediaType(mimeType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
 		return
 	}
 
-	img, err := h.service.UploadImage(
+	m, err := h.service.UploadMedia(
 		c.Request.Context(),
 		userID,
 		file,
@@ -103,128 +91,128 @@ func (h *ImageUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, img)
+	c.JSON(http.StatusOK, m)
 }
 
-// -------------------- List --------------------
+func isSupportedMediaType(mimeType string) bool {
+	supported := []string{
+		"image/jpeg", "image/jpg", "image/png",
+		"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska",
+		"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/ogg", "audio/flac", "audio/aac", "audio/mp4",
+	}
+	for _, t := range supported {
+		if mimeType == t {
+			return true
+		}
+	}
+	return false
+}
 
-func (h *ImageListHandler) List(c *gin.Context) {
+func (h *MediaListHandler) List(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	images, err := h.repo.ListByUser(c.Request.Context(), userID)
+	mediaType := c.Query("type")
+
+	var items []media.Media
+	var err error
+
+	if mediaType != "" {
+		items, err = h.repo.ListByUserAndType(c.Request.Context(), userID, mediaType)
+	} else {
+		items, err = h.repo.ListByUser(c.Request.Context(), userID)
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, images)
+	c.JSON(http.StatusOK, items)
 }
 
-// -------------------- Delete --------------------
-
-func (h *ImageUploadHandler) Delete(c *gin.Context) {
+func (h *MediaUploadHandler) Delete(c *gin.Context) {
 	userID := c.GetString("userID")
-	imageID := c.Param("id")
+	mediaID := c.Param("id")
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	if err := h.service.DeleteImage(c.Request.Context(), imageID, userID); err != nil {
+	if err := h.service.DeleteMedia(c.Request.Context(), mediaID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "image deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "media deleted successfully"})
 }
 
-// -------------------- Rename --------------------
-
-func (h *ImageListHandler) Rename(c *gin.Context) {
+func (h *MediaListHandler) Rename(c *gin.Context) {
 	userID := c.GetString("userID")
-	imageID := c.Param("id")
+	mediaID := c.Param("id")
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	var req RenameImageRequest
+	var req RenameMediaRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	if err := h.repo.UpdateName(c.Request.Context(), imageID, userID, req.Name); err != nil {
+	if err := h.repo.UpdateName(c.Request.Context(), mediaID, userID, req.Name); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "image renamed successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "media renamed successfully"})
 }
 
-// -------------------- Dynamic Image Processing --------------------
+func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
+	mediaID := c.Param("id")
 
-func (h *ImageListHandler) ServeProcessed(c *gin.Context) {
-	imageID := c.Param("id")
-
-	// 1. Fetch image metadata
-	img, err := h.repo.GetByID(c.Request.Context(), imageID)
+	m, err := h.repo.GetByID(c.Request.Context(), mediaID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "media not found"})
 		return
 	}
 
-	// 2. Extract R2 key from original URL
-	originalKey := extractKey(img.OriginalURL)
+	if m.Type != "image" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "dynamic processing only supported for images"})
+		return
+	}
 
-	// 3. Download original image bytes
+	originalKey := extractKey(m.OriginalURL)
+
 	originalBytes, err := h.service.Storage.Get(c.Request.Context(), originalKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch original image"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch original media"})
 		return
 	}
 
-	// 4. Parse processing options from URL
 	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
 
-	// if processOpts.MaxHeight == 0 && processOpts.MaxWidth == 0 {
-	// 	// No processing requested; serve original
-	// 	return c.Redirect(http.StatusFound, img.OriginalURL)
-	// }
-
-	// 5. Process image dynamically
-	result, contentType, err := image.ProcessSingle(
-		originalBytes,
-		processOpts,
-	)
+	result, contentType, err := image.ProcessSingle(originalBytes, processOpts)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("image processing failed: %v", err.Error())})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("media processing failed: %v", err.Error())})
 		return
 	}
 
-	log.Printf("Successfully processed %s of size %d", imageID, len(result))
+	log.Printf("Successfully processed %s of size %d", mediaID, len(result))
 
-	// Set caching headers & content type
 	c.Header("Content-Type", contentType)
 	c.Header("Content-Disposition", "inline")
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Cache-Control", "public, max-age=31536000, immutable") // Cache for 1 year
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 
-	// 6. Return processed image
-	c.Data(
-		http.StatusOK,
-		contentType,
-		result,
-	)
+	c.Data(http.StatusOK, contentType, result)
 }
-
-// -------------------- Utils --------------------
 
 func extractKey(publicURL string) string {
 	u, err := url.Parse(publicURL)

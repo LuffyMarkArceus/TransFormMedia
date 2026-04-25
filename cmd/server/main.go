@@ -51,13 +51,13 @@ func main() {
 	mediaRepo := media.NewPostgresRepository(db)
 	uploadService := upload.NewService(mediaRepo, r2Client)
 
-	uploadHandler := http.NewImageUploadHandler(uploadService)
-	listHandler := http.NewImageListHandler(mediaRepo, uploadService)
+	mediaHandler := http.NewMediaUploadHandler(uploadService)
+	listHandler := http.NewMediaListHandler(mediaRepo, uploadService)
 
 	router := http.NewGinServer(&config.Config{
 		ServerPort: cfg.ServerPort,
 	})
-	api.RegisterRoutes(router, uploadHandler, listHandler)
+	api.RegisterRoutes(router, mediaHandler, listHandler)
 
 	log.Println("🚀 Server running on port", cfg.ServerPort)
 	if err := router.Run(":" + cfg.ServerPort); err != nil {
