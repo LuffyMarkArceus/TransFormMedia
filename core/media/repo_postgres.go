@@ -2,7 +2,9 @@ package media
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -159,6 +161,45 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, er
 	)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+func (r *PostgresRepository) GetByIDForUser(ctx context.Context, id, userID string) (*Media, error) {
+	var m Media
+
+	err := r.db.QueryRow(ctx,
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, width, height, duration_seconds, status, created_at
+		 FROM media
+		 WHERE id=$1 AND user_id=$2`,
+		id,
+		userID,
+	).Scan(
+		&m.ID,
+		&m.UserID,
+		&m.Name,
+		&m.Type,
+		&m.OriginalURL,
+		&m.ProcessedURL,
+		&m.ThumbnailURL,
+		&m.Format,
+		&m.SizeBytes,
+		&m.Width,
+		&m.Height,
+		&m.Duration,
+		&m.Status,
+		&m.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 
@@ -166,17 +207,23 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, er
 }
 
 func (r *PostgresRepository) DeleteByID(ctx context.Context, id string, userID string) error {
-	_, err := r.db.Exec(ctx,
+	tag, err := r.db.Exec(ctx,
 		`DELETE FROM media
 		 WHERE id=$1 AND user_id=$2`,
 		id,
 		userID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *PostgresRepository) UpdateName(ctx context.Context, id string, userID string, name string) error {
-	_, err := r.db.Exec(ctx,
+	tag, err := r.db.Exec(ctx,
 		`UPDATE media
 		 SET name = $1, updated_at = NOW()
 		 WHERE id = $2 AND user_id = $3
@@ -185,5 +232,11 @@ func (r *PostgresRepository) UpdateName(ctx context.Context, id string, userID s
 		id,
 		userID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

@@ -71,7 +71,7 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 	}
 	file.Seek(0, 0)
 
-	mimeType := http.DetectContentType(buf)
+	mimeType := normalizeContentType(http.DetectContentType(buf))
 	if !isSupportedMediaType(mimeType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
 		return
@@ -82,30 +82,19 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		userID,
 		file,
 		fileHeader.Filename,
-		fileHeader.Header.Get("Content-Type"),
+		mimeType,
 		fileHeader.Size,
 	)
 	if err != nil {
 		log.Printf("Upload Error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if respondProcessingError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload media"})
 		return
 	}
 
 	c.JSON(http.StatusOK, m)
-}
-
-func isSupportedMediaType(mimeType string) bool {
-	supported := []string{
-		"image/jpeg", "image/jpg", "image/png",
-		"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska",
-		"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/ogg", "audio/flac", "audio/aac", "audio/mp4",
-	}
-	for _, t := range supported {
-		if mimeType == t {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *MediaListHandler) List(c *gin.Context) {
@@ -144,7 +133,10 @@ func (h *MediaUploadHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.service.DeleteMedia(c.Request.Context(), mediaID, userID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if respondMediaError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete media"})
 		return
 	}
 
@@ -167,7 +159,10 @@ func (h *MediaListHandler) Rename(c *gin.Context) {
 	}
 
 	if err := h.repo.UpdateName(c.Request.Context(), mediaID, userID, req.Name); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if respondMediaError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rename media"})
 		return
 	}
 
@@ -175,11 +170,20 @@ func (h *MediaListHandler) Rename(c *gin.Context) {
 }
 
 func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	mediaID := c.Param("id")
 
-	m, err := h.repo.GetByID(c.Request.Context(), mediaID)
+	m, err := h.repo.GetByIDForUser(c.Request.Context(), mediaID, userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "media not found"})
+		if respondMediaError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load media"})
 		return
 	}
 
@@ -188,19 +192,22 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 		return
 	}
 
-	originalKey := extractKey(m.OriginalURL)
+	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
+	sourceURL := image.PickProcessSourceURL(m, processOpts)
+	sourceKey := extractKey(sourceURL)
 
-	originalBytes, err := h.service.Storage.Get(c.Request.Context(), originalKey)
+	sourceBytes, err := h.service.Storage.Get(c.Request.Context(), sourceKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch original media"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch media from storage"})
 		return
 	}
 
-	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
-
-	result, contentType, err := image.ProcessSingle(originalBytes, processOpts)
+	result, contentType, err := image.ProcessSingle(sourceBytes, processOpts)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("media processing failed: %v", err.Error())})
+		if respondProcessingError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "media processing failed"})
 		return
 	}
 

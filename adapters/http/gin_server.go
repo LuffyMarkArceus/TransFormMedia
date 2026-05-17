@@ -1,8 +1,9 @@
 package http
 
 import (
+	"os"
+	"strings"
 	"time"
-	"universal-media-service/core/auth"
 	"universal-media-service/internal/config"
 
 	"github.com/gin-contrib/cors"
@@ -12,17 +13,35 @@ import (
 func NewGinServer(cfg *config.Config) *gin.Engine {
 	r := gin.Default()
 
-	// Initialize Clerk JWKS
-	auth.InitJWKS()
-
-	// Enable CORS
+	origins := corsAllowedOrigins()
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"}, // or "*" for all origins,      // http://localhost:3000
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowOrigins:     origins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
 
+	_ = cfg // reserved for future server-level config
+
 	return r
+}
+
+func corsAllowedOrigins() []string {
+	raw := os.Getenv("ALLOWED_ORIGINS")
+	if raw == "" {
+		return []string{"http://localhost:3000"}
+	}
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, o := range parts {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			origins = append(origins, o)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{"http://localhost:3000"}
+	}
+	return origins
 }

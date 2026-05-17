@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
-	"universal-media-service/adapters/r2"
 	"universal-media-service/core/audio"
 	"universal-media-service/core/image"
 	"universal-media-service/core/media"
@@ -20,14 +21,14 @@ import (
 )
 
 type Service struct {
-	Storage        *r2.Client
+	Storage        Storage
 	repo           media.Repository
 	imageProcessor *image.Processor
 	videoProcessor *video.Processor
 	audioProcessor *audio.Processor
 }
 
-func NewService(repo media.Repository, storage *r2.Client) *Service {
+func NewService(repo media.Repository, storage Storage) *Service {
 	return &Service{
 		Storage:        storage,
 		repo:           repo,
@@ -36,6 +37,11 @@ func NewService(repo media.Repository, storage *r2.Client) *Service {
 		audioProcessor: audio.NewProcessor(),
 	}
 }
+
+const (
+	// Max size we allow for synchronous in-memory processing (50 MB)
+	MaxSyncProcessingSize = 50 * 1024 * 1024
+)
 
 var supportedImageTypes = []string{"image/jpeg", "image/jpg", "image/png"}
 var supportedVideoTypes = []string{"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska"}
@@ -106,15 +112,78 @@ func (s *Service) UploadMedia(
 	if processor == nil {
 		return nil, fmt.Errorf("unsupported media type: %s", contentType)
 	}
+	mediaType := getMediaType(contentType)
+	mediaID := uuid.NewString()
+
+	// If the upload is large, avoid in-memory synchronous processing.
+	if size > MaxSyncProcessingSize {
+		// Persist raw to a temp file and upload the original to storage, leaving processing to async workers.
+		tmp, err := os.CreateTemp("", "ums_upload_*")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temp file: %w", err)
+		}
+		defer func() {
+			tmp.Close()
+			os.Remove(tmp.Name())
+		}()
+
+		if _, err := io.Copy(tmp, file); err != nil {
+			return nil, fmt.Errorf("failed to save upload to temp file: %w", err)
+		}
+
+		// Upload original
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		rawKey := fmt.Sprintf("raw/%s/%s/%s", mediaType, userID, mediaID)
+		f, err := os.Open(tmp.Name())
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+
+		_, err = s.Storage.Upload(ctx, rawKey, f, contentType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload original: %w", err)
+		}
+
+		originalURL := fmt.Sprintf("%s/%s", s.Storage.PublicBaseURL(), rawKey)
+
+		m := &media.Media{
+			ID:           mediaID,
+			UserID:       userID,
+			Name:         filename,
+			Type:         mediaType,
+			OriginalURL:  originalURL,
+			ProcessedURL: nil,
+			ThumbnailURL: nil,
+			Format:       contentType,
+			SizeBytes:    size,
+			Width:        0,
+			Height:       0,
+			Duration:     0,
+			Status:       "uploaded",
+			CreatedAt:    time.Now(),
+		}
+
+		if err := s.repo.Create(ctx, m); err != nil {
+			return nil, err
+		}
+
+		log.Printf("Uploaded raw (deferred processing) %s for %s", mediaType, mediaID)
+		return m, nil
+	}
+
+	// Small uploads: read into memory and process synchronously (with pre-decode checks in processor)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		// Not all multipart.File implementations support Seek; fall back to reading
+	}
 
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(file); err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 	originalBytes := buf.Bytes()
-
-	mediaType := getMediaType(contentType)
-	mediaID := uuid.NewString()
 
 	result, err := processor.Process(ctx, originalBytes, contentType)
 	if err != nil {
@@ -141,21 +210,21 @@ func (s *Service) UploadMedia(
 	var thumbnailURL *string
 	if len(result.ThumbnailBytes) > 0 {
 		thumbnailKey := fmt.Sprintf("thumbnail/%s/%s/%s", mediaType, userID, mediaID)
-		thURL, err := s.Storage.Upload(
+		if _, err := s.Storage.Upload(
 			ctx,
 			thumbnailKey,
 			bytes.NewReader(result.ThumbnailBytes),
 			result.ThumbnailContentType,
-		)
-		if err != nil {
+		); err != nil {
 			log.Printf("Warning: failed to upload thumbnail: %v", err)
 		} else {
-			thumbnailURL = &thURL
+			thPublic := fmt.Sprintf("%s/%s", s.Storage.PublicBaseURL(), thumbnailKey)
+			thumbnailURL = &thPublic
 		}
 	}
 
-	originalURL := fmt.Sprintf("%s/%s", s.Storage.PublicBase, rawKey)
-	processedURL := fmt.Sprintf("%s/%s", s.Storage.PublicBase, processedKey)
+	originalURL := fmt.Sprintf("%s/%s", s.Storage.PublicBaseURL(), rawKey)
+	processedURL := fmt.Sprintf("%s/%s", s.Storage.PublicBaseURL(), processedKey)
 
 	m := &media.Media{
 		ID:           mediaID,
@@ -204,7 +273,8 @@ func (s *Service) DeleteMedia(
 	mediaID string,
 	userID string,
 ) error {
-	m, err := s.repo.GetByID(ctx, mediaID)
+	// Ownership must be verified before touching object storage (prevents R2 IDOR).
+	m, err := s.repo.GetByIDForUser(ctx, mediaID, userID)
 	if err != nil {
 		return err
 	}

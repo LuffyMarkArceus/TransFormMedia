@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"io"
 	"mime/multipart"
 
 	_ "image/jpeg"
@@ -26,6 +27,14 @@ func (p *Processor) SupportedTypes() []string {
 }
 
 func (p *Processor) Process(ctx context.Context, data []byte, contentType string) (*media.ProcessedResult, error) {
+	// Quick pre-decode check to avoid decoding very large images
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err == nil {
+		if cfg.Width > MaxAllowedWidth || cfg.Height > MaxAllowedHeight {
+			return nil, errDimensionsExceeded(cfg.Width, cfg.Height)
+		}
+	}
+
 	result, err := p.process(data, media.DefaultImageOptions(), media.DefaultThumbnailOptions())
 	if err != nil {
 		return nil, err
@@ -34,10 +43,28 @@ func (p *Processor) Process(ctx context.Context, data []byte, contentType string
 }
 
 func (p *Processor) ProcessStream(ctx context.Context, file multipart.File, contentType string, size int64) (*media.ProcessedResult, error) {
+	// Read up to a small header to validate dimensions without loading whole file
+	const headerLimit = 1 << 20 // 1 MB
+	headerBuf := new(bytes.Buffer)
+	// TeeReader will copy bytes read by DecodeConfig into headerBuf so we can reconstruct full stream
+	tr := io.TeeReader(io.LimitReader(file, headerLimit), headerBuf)
+
+	cfg, _, err := image.DecodeConfig(tr)
+	if err == nil {
+		if cfg.Width > MaxAllowedWidth || cfg.Height > MaxAllowedHeight {
+			return nil, errDimensionsExceeded(cfg.Width, cfg.Height)
+		}
+	}
+
+	// Reconstruct a reader that starts with the header bytes we consumed, followed by the remainder of the file
+	fullReader := io.MultiReader(bytes.NewReader(headerBuf.Bytes()), file)
+
+	// Read full content into memory (bounded by caller) and hand to Process
 	data := new(bytes.Buffer)
-	if _, err := data.ReadFrom(file); err != nil {
+	if _, err := data.ReadFrom(fullReader); err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
+
 	return p.Process(ctx, data.Bytes(), contentType)
 }
 
@@ -133,6 +160,13 @@ func Process(
 	thumbOpts ThumbnailOptions,
 ) (*ProcessedResult, error) {
 
+	// Pre-decode dimension check
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(original)); err == nil {
+		if cfg.Width > MaxAllowedWidth || cfg.Height > MaxAllowedHeight {
+			return nil, errDimensionsExceeded(cfg.Width, cfg.Height)
+		}
+	}
+
 	img, err := imaging.Decode(
 		bytes.NewReader(original),
 		imaging.AutoOrientation(true),
@@ -184,6 +218,12 @@ func ProcessSingle(
 	original []byte,
 	opts ProcessOptions,
 ) ([]byte, string, error) {
+
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(original)); err == nil {
+		if cfg.Width > MaxAllowedWidth || cfg.Height > MaxAllowedHeight {
+			return nil, "", errDimensionsExceeded(cfg.Width, cfg.Height)
+		}
+	}
 
 	img, err := imaging.Decode(
 		bytes.NewReader(original),

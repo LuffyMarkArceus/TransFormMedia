@@ -15,6 +15,6 @@ func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaL
 		v1.DELETE("/media/:id", auth.ClerkAuthMiddleware(), mediaHandler.Delete)
 		v1.PATCH("/media/:id/rename", auth.ClerkAuthMiddleware(), mediaListHandler.Rename)
 
-		v1.GET("/media/:id/process", mediaListHandler.ServeProcessed)
+		v1.GET("/media/:id/process", auth.ClerkAuthMiddleware(), mediaListHandler.ServeProcessed)
 	}
 }

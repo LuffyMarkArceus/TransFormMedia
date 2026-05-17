@@ -89,6 +89,10 @@ func (c *Client) Upload(ctx context.Context, key string, file io.Reader, content
 	return fmt.Sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", c.bucket, c.bucket, key), nil
 }
 
+func (c *Client) PublicBaseURL() string {
+	return c.PublicBase
+}
+
 func (c *Client) Delete(ctx context.Context, key string) error {
 	_, err := c.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
