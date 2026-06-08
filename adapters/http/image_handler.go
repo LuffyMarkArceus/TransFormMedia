@@ -84,7 +84,10 @@ func (h *MediaUploadHandler) Replace(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
 		return
 	}
-	file.Seek(0, 0)
+	if _, err := file.Seek(0, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot seek file"})
+		return
+	}
 
 	mimeType := normalizeContentType(http.DetectContentType(buf))
 	if !isSupportedMediaType(mimeType) {
@@ -165,7 +168,10 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
 		return
 	}
-	file.Seek(0, 0)
+	if _, err := file.Seek(0, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot seek file"})
+		return
+	}
 
 	mimeType := normalizeContentType(http.DetectContentType(buf))
 	if !isSupportedMediaType(mimeType) {

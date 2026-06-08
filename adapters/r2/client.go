@@ -55,8 +55,8 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true // required for R2
-		o.EndpointResolver = s3.EndpointResolverFromURL(fmt.Sprintf("https://%s.r2.cloudflarestorage.com", cfg.AccountID))
+		o.UsePathStyle = true
+		o.BaseEndpoint = aws.String(fmt.Sprintf("https://%s.r2.cloudflarestorage.com", cfg.AccountID))
 	})
 
 	uploader := manager.NewUploader(s3Client, func(u *manager.Uploader) {
@@ -119,6 +119,7 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+//nolint:unused
 func splitHostPort(addr string) (string, string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

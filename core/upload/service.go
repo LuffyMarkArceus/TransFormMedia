@@ -242,7 +242,7 @@ func (s *Service) UploadMedia(
 
 	// Small uploads: read into memory and process synchronously (with pre-decode checks in processor)
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		// Not all multipart.File implementations support Seek; fall back to reading
+		log.Printf("Warning: seek failed (non-critical): %v", err)
 	}
 
 	buf := new(bytes.Buffer)

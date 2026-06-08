@@ -180,6 +180,7 @@ func (p *Processor) copyVideo(inputPath, outputPath string) error {
 	return nil
 }
 
+//nolint:unused
 func (p *Processor) transcode(inputPath, outputPath string, opts media.ProcessingOptions) error {
 	cmd := exec.Command(p.ffmpegPath,
 		"-i", inputPath,
@@ -204,6 +205,7 @@ func (p *Processor) transcode(inputPath, outputPath string, opts media.Processin
 	return nil
 }
 
+//nolint:unused
 func extractKey(publicURL string) string {
 	if idx := strings.LastIndex(publicURL, "/raw/"); idx != -1 {
 		return strings.TrimPrefix(publicURL[idx:], "/")

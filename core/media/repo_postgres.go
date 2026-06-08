@@ -173,7 +173,7 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 	var mediaItems []Media
 	for rows.Next() {
 		var m Media
-		rows.Scan(
+		if err := rows.Scan(
 			&m.ID,
 			&m.UserID,
 			&m.Name,
@@ -188,7 +188,9 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 			&m.Duration,
 			&m.Status,
 			&m.CreatedAt,
-		)
+		); err != nil {
+			return nil, err
+		}
 		mediaItems = append(mediaItems, m)
 	}
 
@@ -212,7 +214,7 @@ func (r *PostgresRepository) ListByUserAndType(ctx context.Context, userID strin
 	var mediaItems []Media
 	for rows.Next() {
 		var m Media
-		rows.Scan(
+		if err := rows.Scan(
 			&m.ID,
 			&m.UserID,
 			&m.Name,
@@ -227,7 +229,9 @@ func (r *PostgresRepository) ListByUserAndType(ctx context.Context, userID strin
 			&m.Duration,
 			&m.Status,
 			&m.CreatedAt,
-		)
+		); err != nil {
+			return nil, err
+		}
 		mediaItems = append(mediaItems, m)
 	}
 
