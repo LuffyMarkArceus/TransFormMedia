@@ -16,14 +16,38 @@ const (
 	MaxAllowedQuality = 100
 )
 
+type Gravity string
+
+const (
+	GravityCenter      Gravity = "center"
+	GravityTop         Gravity = "top"
+	GravityBottom      Gravity = "bottom"
+	GravityLeft        Gravity = "left"
+	GravityRight       Gravity = "right"
+	GravityTopLeft     Gravity = "topleft"
+	GravityTopRight    Gravity = "topright"
+	GravityBottomLeft  Gravity = "bottomleft"
+	GravityBottomRight Gravity = "bottomright"
+	DefaultGravity     Gravity = "center"
+)
+
 type ProcessOptions struct {
 	// Resize
 	MaxWidth  int
 	MaxHeight int
 
+	// Crop (set both to non-zero to enable)
+	CropWidth  int
+	CropHeight int
+	Gravity    Gravity
+
 	// Output
 	Format  Format
 	Quality int // JPEG/WebP quality (1–100)
+
+	// Effects
+	Blur      float64 // Gaussian blur sigma (0 = disabled)
+	Grayscale bool    // convert to grayscale
 }
 
 func DefaultOptions() ProcessOptions {

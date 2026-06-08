@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
@@ -39,6 +42,13 @@ func NewClient(cfg Config) (*Client, error) {
 		awsConfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		),
+		awsConfig.WithHTTPClient(&http.Client{
+			Timeout: 10 * time.Minute,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout: 30 * time.Second,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}),
 	)
 	if err != nil {
 		return nil, err
@@ -49,7 +59,10 @@ func NewClient(cfg Config) (*Client, error) {
 		o.EndpointResolver = s3.EndpointResolverFromURL(fmt.Sprintf("https://%s.r2.cloudflarestorage.com", cfg.AccountID))
 	})
 
-	uploader := manager.NewUploader(s3Client)
+	uploader := manager.NewUploader(s3Client, func(u *manager.Uploader) {
+		u.PartSize = 100 * 1024 * 1024 // 100 MB per part
+		u.Concurrency = 4
+	})
 
 	return &Client{
 		bucket:     cfg.Bucket,
@@ -76,6 +89,10 @@ func (c *Client) Upload(ctx context.Context, key string, file io.Reader, content
 	return fmt.Sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", c.bucket, c.bucket, key), nil
 }
 
+func (c *Client) PublicBaseURL() string {
+	return c.PublicBase
+}
+
 func (c *Client) Delete(ctx context.Context, key string) error {
 	_, err := c.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
@@ -100,4 +117,12 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func splitHostPort(addr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", "", err
+	}
+	return host, port, nil
 }

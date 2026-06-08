@@ -55,6 +55,36 @@ func ParseProcessOptions(values url.Values) ProcessOptions {
 		}
 	}
 
+	if blur := values.Get("blur"); blur != "" {
+		if v, err := strconv.ParseFloat(blur, 64); err == nil && v > 0 && v <= 20 {
+			opts.Blur = v
+		}
+	}
+
+	if gs := values.Get("grayscale"); gs != "" {
+		if gs == "true" || gs == "1" {
+			opts.Grayscale = true
+		}
+	}
+
+	if cw := values.Get("cw"); cw != "" {
+		if v, err := strconv.Atoi(cw); err == nil && v > 0 && v <= MaxAllowedWidth {
+			opts.CropWidth = v
+		}
+	}
+	if ch := values.Get("ch"); ch != "" {
+		if v, err := strconv.Atoi(ch); err == nil && v > 0 && v <= MaxAllowedHeight {
+			opts.CropHeight = v
+		}
+	}
+	if g := strings.ToLower(values.Get("gravity")); g != "" {
+		switch g {
+		case "center", "top", "bottom", "left", "right",
+			"topleft", "topright", "bottomleft", "bottomright":
+			opts.Gravity = Gravity(g)
+		}
+	}
+
 	return opts
 }
 

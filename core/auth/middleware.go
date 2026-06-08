@@ -61,10 +61,18 @@ func ClerkAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Save user info into the context for handlers
-		c.Set("userID", claims["sub"])
-		c.Set("email", claims["email"])
-		c.Set("issuer", claims["iss"])
+		sub, ok := claims["sub"].(string)
+		if !ok || sub == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token subject"})
+			return
+		}
+
+		email, _ := claims["email"].(string)
+		issuer, _ := claims["iss"].(string)
+
+		c.Set("userID", sub)
+		c.Set("email", email)
+		c.Set("issuer", issuer)
 
 		c.Next()
 	}
