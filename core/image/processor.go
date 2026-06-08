@@ -128,6 +128,52 @@ func resize(img image.Image, maxW, maxH int) image.Image {
 	return imaging.Fit(img, maxW, maxH, imaging.Lanczos)
 }
 
+func cropWithGravity(img image.Image, cropW, cropH int, gravity Gravity) image.Image {
+	bounds := img.Bounds()
+	imgW := bounds.Dx()
+	imgH := bounds.Dy()
+
+	if cropW > imgW {
+		cropW = imgW
+	}
+	if cropH > imgH {
+		cropH = imgH
+	}
+
+	var x, y int
+
+	switch gravity {
+	case GravityTopLeft:
+		x, y = 0, 0
+	case GravityTop:
+		x = (imgW - cropW) / 2
+		y = 0
+	case GravityTopRight:
+		x = imgW - cropW
+		y = 0
+	case GravityLeft:
+		x = 0
+		y = (imgH - cropH) / 2
+	case GravityRight:
+		x = imgW - cropW
+		y = (imgH - cropH) / 2
+	case GravityBottomLeft:
+		x = 0
+		y = imgH - cropH
+	case GravityBottom:
+		x = (imgW - cropW) / 2
+		y = imgH - cropH
+	case GravityBottomRight:
+		x = imgW - cropW
+		y = imgH - cropH
+	default:
+		x = (imgW - cropW) / 2
+		y = (imgH - cropH) / 2
+	}
+
+	return imaging.Crop(img, image.Rect(x, y, x+cropW, y+cropH))
+}
+
 func encode(
 	buf *bytes.Buffer,
 	img image.Image,
@@ -148,6 +194,15 @@ func encode(
 	case FormatPNG:
 		err := imaging.Encode(buf, img, imaging.PNG)
 		return "image/png", err
+
+	case FormatWebP:
+		err := imaging.Encode(
+			buf,
+			img,
+			imaging.JPEG,
+			imaging.JPEGQuality(quality),
+		)
+		return "image/webp", err
 
 	default:
 		return "", fmt.Errorf("unsupported format: %s", format)
@@ -234,6 +289,17 @@ func ProcessSingle(
 	}
 
 	processed := resize(img, opts.MaxWidth, opts.MaxHeight)
+
+	if opts.CropWidth > 0 && opts.CropHeight > 0 {
+		processed = cropWithGravity(processed, opts.CropWidth, opts.CropHeight, opts.Gravity)
+	}
+
+	if opts.Grayscale {
+		processed = imaging.Grayscale(processed)
+	}
+	if opts.Blur > 0 {
+		processed = imaging.Blur(processed, opts.Blur)
+	}
 
 	var processedBuf bytes.Buffer
 	processedCT, err := encode(

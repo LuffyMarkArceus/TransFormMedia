@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"universal-media-service/adapters/cache"
 	adapterhttp "universal-media-service/adapters/http"
 	"universal-media-service/adapters/neondb"
 	"universal-media-service/adapters/r2"
@@ -17,6 +19,7 @@ import (
 	"universal-media-service/core/auth"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
+	"universal-media-service/core/worker"
 	"universal-media-service/internal/config"
 
 	"github.com/joho/godotenv"
@@ -24,6 +27,9 @@ import (
 
 func main() {
 	_ = godotenv.Load()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	appCfg := config.Load()
 
 	cfg := struct {
@@ -42,6 +48,8 @@ func main() {
 		ServerPort:   appCfg.ServerPort,
 	}
 
+	slog.Info("Starting Universal Media Service")
+
 	auth.InitJWKS()
 
 	r2Client, err := r2.NewClient(r2.Config{
@@ -52,6 +60,7 @@ func main() {
 		PublicBase: cfg.R2PublicBase,
 	})
 	if err != nil {
+		slog.Error("Failed to create R2 client", "error", err)
 		log.Fatal(err)
 	}
 	db := neondb.New()
@@ -59,12 +68,27 @@ func main() {
 	mediaRepo := media.NewPostgresRepository(db)
 	uploadService := upload.NewService(mediaRepo, r2Client)
 
+	var cacheClient *cache.RedisCache
+	if appCfg.RedisURL != "" {
+		var err error
+		cacheClient, err = cache.NewRedisCache(appCfg.RedisURL, time.Duration(appCfg.RedisTTL)*time.Second)
+		if err != nil {
+			slog.Warn("Redis unavailable, proceeding without cache", "error", err)
+		}
+	}
+
 	mediaHandler := adapterhttp.NewMediaUploadHandler(uploadService)
-	listHandler := adapterhttp.NewMediaListHandler(mediaRepo, uploadService)
+	listHandler := adapterhttp.NewMediaListHandler(mediaRepo, uploadService, cacheClient)
+
+	shareHandler := adapterhttp.NewShareHandler(mediaRepo, appCfg.ShareSecret, appCfg.ShareTTL)
 
 	router := adapterhttp.NewGinServer(appCfg)
 	adapterhttp.RegisterHealthRoutes(router, db)
-	api.RegisterRoutes(router, mediaHandler, listHandler)
+	api.RegisterRoutes(router, mediaHandler, listHandler, shareHandler)
+
+	wpCtx, wpCancel := context.WithCancel(context.Background())
+	wp := worker.New(mediaRepo, r2Client, uploadService.GetImageProcessor(), uploadService.GetVideoProcessor(), uploadService.GetAudioProcessor())
+	go wp.Start(wpCtx)
 
 	addr := ":" + cfg.ServerPort
 	srv := &http.Server{
@@ -73,21 +97,25 @@ func main() {
 	}
 
 	go func() {
-		log.Println("🚀 Server running on port", cfg.ServerPort)
+		slog.Info("Server started", "port", cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Server error", "error", err)
 			log.Fatal(err)
 		}
 	}()
+
+	defer wpCancel()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	slog.Info("Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("Server shutdown failed", "error", err)
 		log.Fatalf("Server shutdown failed: %v", err)
 	}
-	log.Println("Server stopped gracefully")
+	slog.Info("Server stopped gracefully")
 }

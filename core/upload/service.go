@@ -74,6 +74,18 @@ func isAudioType(ct string) bool {
 	return false
 }
 
+func (s *Service) GetImageProcessor() *image.Processor {
+	return s.imageProcessor
+}
+
+func (s *Service) GetVideoProcessor() *video.Processor {
+	return s.videoProcessor
+}
+
+func (s *Service) GetAudioProcessor() *audio.Processor {
+	return s.audioProcessor
+}
+
 func (s *Service) getProcessor(contentType string) media.MediaProcessor {
 	switch {
 	case isImageType(contentType):
@@ -98,6 +110,60 @@ func getMediaType(contentType string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func (s *Service) ReplaceMedia(
+	ctx context.Context,
+	mediaID string,
+	userID string,
+	file multipart.File,
+	filename string,
+	contentType string,
+	size int64,
+) (*media.Media, error) {
+	existing, err := s.repo.GetByIDForUser(ctx, mediaID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Clean up old storage files
+	if existing.OriginalURL != "" {
+		_ = s.Storage.Delete(ctx, extractKey(existing.OriginalURL))
+	}
+	if existing.ProcessedURL != nil {
+		_ = s.Storage.Delete(ctx, extractKey(*existing.ProcessedURL))
+	}
+	if existing.ThumbnailURL != nil {
+		_ = s.Storage.Delete(ctx, extractKey(*existing.ThumbnailURL))
+	}
+
+	// Upload and process new file
+	m, err := s.uploadNewVersion(ctx, userID, file, filename, contentType, size)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use existing media ID instead of a new one
+	m.ID = mediaID
+
+	// Hard-delete old record and create new one
+	_ = s.repo.DeleteByID(ctx, mediaID, userID)
+	if err := s.repo.Create(ctx, m); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func (s *Service) uploadNewVersion(
+	ctx context.Context,
+	userID string,
+	file multipart.File,
+	filename string,
+	contentType string,
+	size int64,
+) (*media.Media, error) {
+	return s.UploadMedia(ctx, userID, file, filename, contentType, size)
 }
 
 func (s *Service) UploadMedia(
@@ -239,7 +305,7 @@ func (s *Service) UploadMedia(
 		Width:        result.Width,
 		Height:       result.Height,
 		Duration:     result.Duration,
-		Status:       "uploaded",
+		Status:       "ready",
 		CreatedAt:    time.Now(),
 	}
 
@@ -247,7 +313,7 @@ func (s *Service) UploadMedia(
 		return nil, err
 	}
 
-	log.Printf("Uploaded %s for %s (%dx%d, %ds)", mediaType, mediaID, result.Width, result.Height, result.Duration)
+	log.Printf("Uploaded and processed %s for %s (%dx%d, %ds)", mediaType, mediaID, result.Width, result.Height, result.Duration)
 
 	return m, nil
 }
@@ -273,7 +339,14 @@ func (s *Service) DeleteMedia(
 	mediaID string,
 	userID string,
 ) error {
-	// Ownership must be verified before touching object storage (prevents R2 IDOR).
+	return s.repo.UpdateStatus(ctx, mediaID, userID, "trashed")
+}
+
+func (s *Service) HardDeleteMedia(
+	ctx context.Context,
+	mediaID string,
+	userID string,
+) error {
 	m, err := s.repo.GetByIDForUser(ctx, mediaID, userID)
 	if err != nil {
 		return err
@@ -281,18 +354,23 @@ func (s *Service) DeleteMedia(
 
 	if m.OriginalURL != "" {
 		_ = s.Storage.Delete(ctx, extractKey(m.OriginalURL))
-		log.Printf("Deleted original from R2: %s", m.OriginalURL)
 	}
 	if m.ProcessedURL != nil {
 		_ = s.Storage.Delete(ctx, extractKey(*m.ProcessedURL))
-		log.Printf("Deleted processed from R2: %s", *m.ProcessedURL)
 	}
 	if m.ThumbnailURL != nil {
 		_ = s.Storage.Delete(ctx, extractKey(*m.ThumbnailURL))
-		log.Printf("Deleted thumbnail from R2: %s", *m.ThumbnailURL)
 	}
 
 	return s.repo.DeleteByID(ctx, mediaID, userID)
+}
+
+func (s *Service) RestoreMedia(
+	ctx context.Context,
+	mediaID string,
+	userID string,
+) error {
+	return s.repo.UpdateStatus(ctx, mediaID, userID, "ready")
 }
 
 func (s *Service) DeleteImage(
@@ -301,4 +379,22 @@ func (s *Service) DeleteImage(
 	userID string,
 ) error {
 	return s.DeleteMedia(ctx, imageID, userID)
+}
+
+func (s *Service) ReprocessMedia(
+	ctx context.Context,
+	mediaID string,
+	userID string,
+) (*media.Media, error) {
+	m, err := s.repo.GetByIDForUser(ctx, mediaID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.repo.UpdateStatus(ctx, mediaID, userID, "uploaded"); err != nil {
+		return nil, err
+	}
+
+	m.Status = "uploaded"
+	return m, nil
 }
