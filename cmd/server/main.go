@@ -25,6 +25,11 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type cacheGetter interface {
+	GetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string) ([]byte, bool, error)
+	SetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string, data []byte) error
+}
+
 func main() {
 	_ = godotenv.Load()
 
@@ -68,12 +73,13 @@ func main() {
 	mediaRepo := media.NewPostgresRepository(db)
 	uploadService := upload.NewService(mediaRepo, r2Client)
 
-	var cacheClient *cache.RedisCache
+	var cacheClient cacheGetter
 	if appCfg.RedisURL != "" {
-		var err error
-		cacheClient, err = cache.NewRedisCache(appCfg.RedisURL, time.Duration(appCfg.RedisTTL)*time.Second)
+		rc, err := cache.NewRedisCache(appCfg.RedisURL, time.Duration(appCfg.RedisTTL)*time.Second)
 		if err != nil {
 			slog.Warn("Redis unavailable, proceeding without cache", "error", err)
+		} else {
+			cacheClient = rc
 		}
 	}
 
