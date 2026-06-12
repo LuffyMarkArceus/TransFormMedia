@@ -464,12 +464,14 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 
 	sourceBytes, err := h.service.Storage.Get(ctx, sourceKey)
 	if err != nil {
+		log.Printf("Storage.Get failed for key=%s mediaID=%s: %v", sourceKey, mediaID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch media from storage"})
 		return
 	}
 
 	result, contentType, err := image.ProcessSingle(sourceBytes, processOpts)
 	if err != nil {
+		log.Printf("ProcessSingle failed for mediaID=%s sourceKey=%s opts=%+v: %v", mediaID, sourceKey, processOpts, err)
 		if respondProcessingError(c, err) {
 			return
 		}
