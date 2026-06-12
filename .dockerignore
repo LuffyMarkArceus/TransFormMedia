@@ -1,0 +1,8 @@
+.env
+.git/
+.gitignore
+SystemDesignDoc.md
+MockFlowDoc.txt
+README.md
+scripts/
+.DS_Store
