@@ -55,6 +55,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.Region = "auto"
 		o.UsePathStyle = true
 		o.BaseEndpoint = aws.String(fmt.Sprintf("https://%s.r2.cloudflarestorage.com", cfg.AccountID))
 	})
