@@ -379,6 +379,46 @@ func (r *PostgresRepository) ListByStatus(ctx context.Context, status string, li
 	return items, nil
 }
 
+func (r *PostgresRepository) UpdateContent(ctx context.Context, m *Media) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE media
+		 SET name = $1,
+		     type = $2,
+		     original_url = $3,
+		     processed_url = $4,
+		     thumbnail_url = $5,
+		     format = $6,
+		     size_bytes = $7,
+		     width = $8,
+		     height = $9,
+		     duration_seconds = $10,
+		     status = $11,
+		     updated_at = NOW()
+		 WHERE id = $12 AND user_id = $13
+		`,
+		m.Name,
+		m.Type,
+		m.OriginalURL,
+		m.ProcessedURL,
+		m.ThumbnailURL,
+		m.Format,
+		m.SizeBytes,
+		m.Width,
+		m.Height,
+		m.Duration,
+		m.Status,
+		m.ID,
+		m.UserID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *PostgresRepository) UpdateStatus(ctx context.Context, id string, userID string, status string) error {
 	tag, err := r.db.Exec(ctx,
 		`UPDATE media

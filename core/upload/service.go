@@ -125,45 +125,51 @@ func (s *Service) ReplaceMedia(
 	if err != nil {
 		return nil, err
 	}
-
-	// Clean up old storage files
-	if existing.OriginalURL != "" {
-		_ = s.Storage.Delete(ctx, extractKey(existing.OriginalURL))
-	}
-	if existing.ProcessedURL != nil {
-		_ = s.Storage.Delete(ctx, extractKey(*existing.ProcessedURL))
-	}
-	if existing.ThumbnailURL != nil {
-		_ = s.Storage.Delete(ctx, extractKey(*existing.ThumbnailURL))
+	if existing.Status == "trashed" {
+		return nil, media.ErrTrashed
 	}
 
-	// Upload and process new file
-	m, err := s.uploadNewVersion(ctx, userID, file, filename, contentType, size)
+	// Ingest the new content under the SAME media ID so storage keys are
+	// reused. Ingestion performs no DB write: if it fails, the existing
+	// record still points at intact objects.
+	m, err := s.ingestMedia(ctx, userID, mediaID, file, filename, contentType, size)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use existing media ID instead of a new one
-	m.ID = mediaID
-
-	// Hard-delete old record and create new one
-	_ = s.repo.DeleteByID(ctx, mediaID, userID)
-	if err := s.repo.Create(ctx, m); err != nil {
+	// Update the existing row in place — no delete + re-create, so no
+	// duplicate rows and no window where the record is missing.
+	if err := s.repo.UpdateContent(ctx, m); err != nil {
 		return nil, err
 	}
+
+	// Only after the DB points at the new content, drop old objects the new
+	// version no longer references (type changed, or an async replace that
+	// has not produced processed/thumbnail variants yet).
+	s.deleteStaleAssets(ctx, existing, m)
 
 	return m, nil
 }
 
-func (s *Service) uploadNewVersion(
-	ctx context.Context,
-	userID string,
-	file multipart.File,
-	filename string,
-	contentType string,
-	size int64,
-) (*media.Media, error) {
-	return s.UploadMedia(ctx, userID, file, filename, contentType, size)
+// deleteStaleAssets removes storage objects from the previous version of a
+// media record that the new version no longer references. Failures are logged
+// only: an orphaned object costs storage, while a wrongly deleted one is data
+// loss.
+func (s *Service) deleteStaleAssets(ctx context.Context, old, updated *media.Media) {
+	stale := func(oldURL, newURL *string) {
+		if oldURL == nil || *oldURL == "" {
+			return
+		}
+		if newURL != nil && *newURL == *oldURL {
+			return
+		}
+		if err := s.Storage.Delete(ctx, extractKey(*oldURL)); err != nil {
+			log.Printf("Warning: failed to delete stale asset %s: %v", *oldURL, err)
+		}
+	}
+	stale(&old.OriginalURL, &updated.OriginalURL)
+	stale(old.ProcessedURL, updated.ProcessedURL)
+	stale(old.ThumbnailURL, updated.ThumbnailURL)
 }
 
 func (s *Service) UploadMedia(
@@ -174,12 +180,34 @@ func (s *Service) UploadMedia(
 	contentType string,
 	size int64,
 ) (*media.Media, error) {
+	m, err := s.ingestMedia(ctx, userID, uuid.NewString(), file, filename, contentType, size)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.Create(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ingestMedia validates, processes and stores the media content under the
+// given mediaID. It returns the fully populated record but does NOT persist
+// it — callers decide whether to Create (new upload) or UpdateContent
+// (replace).
+func (s *Service) ingestMedia(
+	ctx context.Context,
+	userID string,
+	mediaID string,
+	file multipart.File,
+	filename string,
+	contentType string,
+	size int64,
+) (*media.Media, error) {
 	processor := s.getProcessor(contentType)
 	if processor == nil {
 		return nil, fmt.Errorf("unsupported media type: %s", contentType)
 	}
 	mediaType := getMediaType(contentType)
-	mediaID := uuid.NewString()
 
 	// If the upload is large, avoid in-memory synchronous processing.
 	if size > MaxSyncProcessingSize {
@@ -230,10 +258,6 @@ func (s *Service) UploadMedia(
 			Duration:     0,
 			Status:       "uploaded",
 			CreatedAt:    time.Now(),
-		}
-
-		if err := s.repo.Create(ctx, m); err != nil {
-			return nil, err
 		}
 
 		log.Printf("Uploaded raw (deferred processing) %s for %s", mediaType, mediaID)
@@ -307,10 +331,6 @@ func (s *Service) UploadMedia(
 		Duration:     result.Duration,
 		Status:       "ready",
 		CreatedAt:    time.Now(),
-	}
-
-	if err := s.repo.Create(ctx, m); err != nil {
-		return nil, err
 	}
 
 	log.Printf("Uploaded and processed %s for %s (%dx%d, %ds)", mediaType, mediaID, result.Width, result.Height, result.Duration)
@@ -389,6 +409,9 @@ func (s *Service) ReprocessMedia(
 	m, err := s.repo.GetByIDForUser(ctx, mediaID, userID)
 	if err != nil {
 		return nil, err
+	}
+	if m.Status == "trashed" {
+		return nil, media.ErrTrashed
 	}
 
 	if err := s.repo.UpdateStatus(ctx, mediaID, userID, "uploaded"); err != nil {

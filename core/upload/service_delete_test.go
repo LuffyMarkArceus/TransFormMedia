@@ -49,6 +49,9 @@ func (s *stubRepo) UpdateStatus(context.Context, string, string, string) error {
 func (s *stubRepo) UpdateProcessedResult(context.Context, string, string, string, string, int, int, int) error {
 	return nil
 }
+func (s *stubRepo) UpdateContent(context.Context, *media.Media) error {
+	return nil
+}
 
 type stubStorage struct {
 	deletedKeys []string

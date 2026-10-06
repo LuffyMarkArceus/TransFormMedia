@@ -47,4 +47,9 @@ type Repository interface {
 	UpdateName(ctx context.Context, id, userID, name string) error
 	UpdateStatus(ctx context.Context, id, userID, status string) error
 	UpdateProcessedResult(ctx context.Context, id, userID, processedURL, thumbnailURL string, width, height, duration int) error
+
+	// UpdateContent replaces every content-derived field of an existing row
+	// in place. It never changes id, user_id or created_at, and returns
+	// ErrNotFound when the row does not exist or belongs to another user.
+	UpdateContent(ctx context.Context, m *Media) error
 }
