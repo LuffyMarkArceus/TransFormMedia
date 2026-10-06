@@ -372,17 +372,31 @@ func (s *Service) HardDeleteMedia(
 		return err
 	}
 
-	if m.OriginalURL != "" {
-		_ = s.Storage.Delete(ctx, extractKey(m.OriginalURL))
-	}
-	if m.ProcessedURL != nil {
-		_ = s.Storage.Delete(ctx, extractKey(*m.ProcessedURL))
-	}
-	if m.ThumbnailURL != nil {
-		_ = s.Storage.Delete(ctx, extractKey(*m.ThumbnailURL))
+	// Delete the row first: if storage cleanup fails afterwards, the worst
+	// outcome is orphaned objects, never a database row pointing at deleted
+	// files. If the row cannot be deleted, nothing below runs and every
+	// object stays intact with its record.
+	if err := s.repo.DeleteByID(ctx, mediaID, userID); err != nil {
+		return err
 	}
 
-	return s.repo.DeleteByID(ctx, mediaID, userID)
+	cleanup := func(key string) {
+		if key == "" {
+			return
+		}
+		if err := s.Storage.Delete(ctx, key); err != nil {
+			log.Printf("Warning: failed to delete storage object %s: %v", key, err)
+		}
+	}
+	cleanup(extractKey(m.OriginalURL))
+	if m.ProcessedURL != nil {
+		cleanup(extractKey(*m.ProcessedURL))
+	}
+	if m.ThumbnailURL != nil {
+		cleanup(extractKey(*m.ThumbnailURL))
+	}
+
+	return nil
 }
 
 func (s *Service) RestoreMedia(

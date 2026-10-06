@@ -34,18 +34,20 @@ func NewRedisCache(redisURL string, ttl time.Duration) (*RedisCache, error) {
 	return &RedisCache{client: client, ttl: ttl}, nil
 }
 
-// processCacheKey fingerprints the transform options, not just the output
-// format: two requests that differ in width, gravity, blur, etc. must never
-// share a cached entry. The key embeds mediaID so per-media invalidation
-// (InvalidateMedia) can scan for it.
-func processCacheKey(mediaID string, opts image.ProcessOptions) string {
+// processCacheKey fingerprints both the transform options and a content
+// version (the row's updated_at) so two requests that differ in width,
+// gravity, blur, etc. never share an entry — and, crucially, a media record
+// that was replaced is never served previously cached bytes derived from the
+// old content. The key embeds mediaID and version so per-media invalidation
+// (InvalidateMedia) and inspection can scan for it.
+func processCacheKey(mediaID, version string, opts image.ProcessOptions) string {
 	h := sha1.New()
-	h.Write([]byte(fmt.Sprintf("%s:%+v", mediaID, opts)))
-	return "proc:" + mediaID + ":" + hex.EncodeToString(h.Sum(nil))
+	h.Write([]byte(fmt.Sprintf("%s:%s:%+v", mediaID, version, opts)))
+	return "proc:" + mediaID + ":" + version + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-func (r *RedisCache) GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error) {
-	key := processCacheKey(mediaID, opts)
+func (r *RedisCache) GetProcessed(ctx context.Context, mediaID, version string, opts image.ProcessOptions) ([]byte, bool, error) {
+	key := processCacheKey(mediaID, version, opts)
 	data, err := r.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, false, nil
@@ -56,8 +58,8 @@ func (r *RedisCache) GetProcessed(ctx context.Context, mediaID string, opts imag
 	return data, true, nil
 }
 
-func (r *RedisCache) SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error {
-	key := processCacheKey(mediaID, opts)
+func (r *RedisCache) SetProcessed(ctx context.Context, mediaID, version string, opts image.ProcessOptions, data []byte) error {
+	key := processCacheKey(mediaID, version, opts)
 	return r.client.Set(ctx, key, data, r.ttl).Err()
 }
 

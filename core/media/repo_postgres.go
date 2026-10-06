@@ -121,7 +121,7 @@ func (r *PostgresRepository) ListPaginated(ctx context.Context, params ListParam
 	orderClause := fmt.Sprintf("ORDER BY %s %s", params.SortBy, params.SortDir)
 
 	dataQuery := fmt.Sprintf(
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media %s %s LIMIT $%d OFFSET $%d`,
 		whereClause, orderClause, argIdx, argIdx+1,
 	)
@@ -140,7 +140,7 @@ func (r *PostgresRepository) ListPaginated(ctx context.Context, params ListParam
 			&m.ID, &m.UserID, &m.Name, &m.Type,
 			&m.OriginalURL, &m.ProcessedURL, &m.ThumbnailURL,
 			&m.Format, &m.SizeBytes, &m.Width, &m.Height,
-			&m.Duration, &m.Status, &m.CreatedAt,
+			&m.Duration, &m.Status, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -159,7 +159,7 @@ func (r *PostgresRepository) ListPaginated(ctx context.Context, params ListParam
 
 func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]Media, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media
 		 WHERE user_id=$1
 		 ORDER BY created_at DESC`,
@@ -188,6 +188,7 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 			&m.Duration,
 			&m.Status,
 			&m.CreatedAt,
+			&m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -199,7 +200,7 @@ func (r *PostgresRepository) ListByUser(ctx context.Context, userID string) ([]M
 
 func (r *PostgresRepository) ListByUserAndType(ctx context.Context, userID string, mediaType string) ([]Media, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media
 		 WHERE user_id=$1 AND type=$2
 		 ORDER BY created_at DESC`,
@@ -229,6 +230,7 @@ func (r *PostgresRepository) ListByUserAndType(ctx context.Context, userID strin
 			&m.Duration,
 			&m.Status,
 			&m.CreatedAt,
+			&m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -242,7 +244,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, er
 	var m Media
 
 	err := r.db.QueryRow(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media
 		 WHERE id=$1`,
 		id,
@@ -261,6 +263,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string) (*Media, er
 		&m.Duration,
 		&m.Status,
 		&m.CreatedAt,
+		&m.UpdatedAt,
 	)
 
 	if err != nil {
@@ -277,7 +280,7 @@ func (r *PostgresRepository) GetByIDForUser(ctx context.Context, id, userID stri
 	var m Media
 
 	err := r.db.QueryRow(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media
 		 WHERE id=$1 AND user_id=$2`,
 		id,
@@ -297,6 +300,7 @@ func (r *PostgresRepository) GetByIDForUser(ctx context.Context, id, userID stri
 		&m.Duration,
 		&m.Status,
 		&m.CreatedAt,
+		&m.UpdatedAt,
 	)
 
 	if err != nil {
@@ -350,7 +354,7 @@ func (r *PostgresRepository) ListByStatus(ctx context.Context, status string, li
 	}
 
 	rows, err := r.db.Query(ctx,
-		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at
+		`SELECT id, user_id, name, type, original_url, processed_url, thumbnail_url, format, size_bytes, COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0), status, created_at, COALESCE(updated_at, created_at) AS updated_at
 		 FROM media
 		 WHERE status=$1
 		 ORDER BY created_at ASC
@@ -369,7 +373,7 @@ func (r *PostgresRepository) ListByStatus(ctx context.Context, status string, li
 			&m.ID, &m.UserID, &m.Name, &m.Type,
 			&m.OriginalURL, &m.ProcessedURL, &m.ThumbnailURL,
 			&m.Format, &m.SizeBytes, &m.Width, &m.Height,
-			&m.Duration, &m.Status, &m.CreatedAt,
+			&m.Duration, &m.Status, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

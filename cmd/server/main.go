@@ -17,7 +17,6 @@ import (
 	"universal-media-service/adapters/r2"
 	"universal-media-service/api"
 	"universal-media-service/core/auth"
-	"universal-media-service/core/image"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
 	"universal-media-service/core/worker"
@@ -26,10 +25,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type cacheGetter interface {
-	GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error)
-	SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error
-}
+type cacheGetter = adapterhttp.CacheGetter
 
 func main() {
 	_ = godotenv.Load()

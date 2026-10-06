@@ -21,4 +21,9 @@ type Media struct {
 
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
+
+	// UpdatedAt is the last write to the row. Replace bumps it via SQL
+	// (NOW()), so it doubles as a content version for cache keys: a replace
+	// can never be served previously cached transformed bytes.
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }

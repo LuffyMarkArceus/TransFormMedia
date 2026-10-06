@@ -23,12 +23,16 @@ type MediaUploadHandler struct {
 type MediaListHandler struct {
 	repo    media.Repository
 	service *upload.Service
-	cache   cacheGetter
+	cache   CacheGetter
 }
 
-type cacheGetter interface {
-	GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error)
-	SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error
+// CacheGetter is implemented by the transform cache. The `version` argument
+// is the media row's updated_at timestamp: the cache key embeds it so a
+// replace (which bumps updated_at) can never be served bytes derived from the
+// previous content.
+type CacheGetter interface {
+	GetProcessed(ctx context.Context, mediaID, version string, opts image.ProcessOptions) ([]byte, bool, error)
+	SetProcessed(ctx context.Context, mediaID, version string, opts image.ProcessOptions, data []byte) error
 }
 
 type RenameMediaRequest struct {
@@ -43,7 +47,7 @@ func NewMediaUploadHandler(service *upload.Service) *MediaUploadHandler {
 	return &MediaUploadHandler{service: service}
 }
 
-func NewMediaListHandler(repo media.Repository, service *upload.Service, cache cacheGetter) *MediaListHandler {
+func NewMediaListHandler(repo media.Repository, service *upload.Service, cache CacheGetter) *MediaListHandler {
 	return &MediaListHandler{
 		repo:    repo,
 		service: service,
@@ -452,6 +456,7 @@ func (h *MediaListHandler) Info(c *gin.Context) {
 		"duration":     m.Duration,
 		"status":       m.Status,
 		"createdAt":    m.CreatedAt,
+		"updatedAt":    m.UpdatedAt,
 		"hasProcessed": m.ProcessedURL != nil && *m.ProcessedURL != "",
 		"hasThumbnail": m.ThumbnailURL != nil && *m.ThumbnailURL != "",
 	}
@@ -487,9 +492,13 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 	}
 
 	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
+	// Content version: rows rewritten by a replace carry a fresh updated_at,
+	// which moves the cache key and guarantees we never serve transformed
+	// bytes of the previous content.
+	version := strconv.FormatInt(m.UpdatedAt.UnixMicro(), 10)
 
 	if h.cache != nil {
-		if cached, ok, err := h.cache.GetProcessed(ctx, mediaID, processOpts); err == nil && ok {
+		if cached, ok, err := h.cache.GetProcessed(ctx, mediaID, version, processOpts); err == nil && ok {
 			contentType := "image/" + string(processOpts.Format)
 			c.Header("Content-Type", contentType)
 			c.Header("Content-Disposition", "inline")
@@ -522,7 +531,7 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 	}
 
 	if h.cache != nil {
-		if err := h.cache.SetProcessed(ctx, mediaID, processOpts, result); err != nil {
+		if err := h.cache.SetProcessed(ctx, mediaID, version, processOpts, result); err != nil {
 			log.Printf("Warning: failed to cache processed %s: %v", mediaID, err)
 		} else {
 			log.Printf("Cached processed result for %s", mediaID)
