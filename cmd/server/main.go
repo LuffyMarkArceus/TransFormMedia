@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"universal-media-service/adapters/cache"
+	"universal-media-service/adapters/events"
 	adapterhttp "universal-media-service/adapters/http"
 	"universal-media-service/adapters/lease"
 	"universal-media-service/adapters/neondb"
 	"universal-media-service/adapters/r2"
 	"universal-media-service/api"
 	"universal-media-service/core/auth"
+	coreevents "universal-media-service/core/events"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
 	"universal-media-service/core/worker"
@@ -73,6 +75,8 @@ func main() {
 
 	var cacheClient cacheGetter
 	var leaseStore worker.LeaseStore = worker.NewMemLeaseStore(time.Duration(appCfg.WorkerRetryBaseSecs) * time.Second)
+	var eventsHandler *adapterhttp.EventsHandler
+	var eventPublisher coreevents.Publisher
 	if appCfg.RedisURL != "" {
 		rc, err := cache.NewClient(appCfg.RedisURL)
 		if err != nil {
@@ -80,6 +84,10 @@ func main() {
 		} else {
 			cacheClient = cache.NewRedisCacheFromClient(rc, time.Duration(appCfg.RedisTTL)*time.Second)
 			leaseStore = lease.NewRedisLease(rc, time.Duration(appCfg.WorkerRetryBaseSecs)*time.Second)
+
+			redisEvents := events.NewRedisEvents(rc)
+			eventsHandler = adapterhttp.NewEventsHandler(redisEvents, redisEvents)
+			eventPublisher = redisEvents
 		}
 	}
 
@@ -90,12 +98,13 @@ func main() {
 
 	router := adapterhttp.NewGinServer(appCfg)
 	adapterhttp.RegisterHealthRoutes(router, db)
-	api.RegisterRoutes(router, mediaHandler, listHandler, shareHandler)
+	api.RegisterRoutes(router, mediaHandler, listHandler, shareHandler, eventsHandler)
 
 	wpCtx, wpCancel := context.WithCancel(context.Background())
 	wp := worker.New(mediaRepo, r2Client, uploadService.GetImageProcessor(), uploadService.GetVideoProcessor(), uploadService.GetAudioProcessor(),
 		worker.WithLeaseStore(leaseStore),
 		worker.WithRetryMax(appCfg.WorkerMaxAttempts),
+		worker.WithEvents(eventPublisher),
 	)
 	go wp.Start(wpCtx)
 

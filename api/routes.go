@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaListHandler *http.MediaListHandler, shareHandler *http.ShareHandler) {
+func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaListHandler *http.MediaListHandler, shareHandler *http.ShareHandler, eventsHandler *http.EventsHandler) {
 	// Coarse pre-auth flood guard, keyed by client IP. Its job is only to
 	// slow down anonymous floods; it is not spoof-proof behind a proxy.
 	floodLimiter := auth.NewRateLimiter(300, time.Minute)
@@ -48,5 +48,15 @@ func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaL
 
 		// Public share redirect: anonymous, so only the IP flood guard applies.
 		v1.GET("/share/:token", shareHandler.ServeShared)
+
+		// SSE status stream. Authorize is protected (Clerk) and trades the
+		// session for a short-lived random token that EventSource can present
+		// via query string; the stream endpoint itself is unauthenticated so
+		// a browser can open it without setting headers. Only registered when
+		// Redis (the event bus) is available; clients fall back to polling.
+		if eventsHandler != nil {
+			v1.POST("/events/authorize", protected(eventsHandler.Authorize)...)
+			v1.GET("/events/stream", eventsHandler.Stream)
+		}
 	}
 }
