@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"time"
 
 	"universal-media-service/core/image"
@@ -18,7 +17,10 @@ type RedisCache struct {
 	ttl    time.Duration
 }
 
-func NewRedisCache(redisURL string, ttl time.Duration) (*RedisCache, error) {
+// NewClient dials Redis once. The single client is shared across the cache,
+// the worker lease store, and the SSE event bus, so the process keeps one
+// connection pool instead of one per subsystem.
+func NewClient(redisURL string) (*redis.Client, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse redis url: %w", err)
@@ -27,11 +29,15 @@ func NewRedisCache(redisURL string, ttl time.Duration) (*RedisCache, error) {
 	client := redis.NewClient(opts)
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
+		client.Close()
 		return nil, fmt.Errorf("failed to ping redis: %w", err)
 	}
 
-	log.Printf("Connected to Redis (TTL: %v)", ttl)
-	return &RedisCache{client: client, ttl: ttl}, nil
+	return client, nil
+}
+
+func NewRedisCacheFromClient(client *redis.Client, ttl time.Duration) *RedisCache {
+	return &RedisCache{client: client, ttl: ttl}
 }
 
 // processCacheKey fingerprints both the transform options and a content

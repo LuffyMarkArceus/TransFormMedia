@@ -13,6 +13,7 @@ import (
 
 	"universal-media-service/adapters/cache"
 	adapterhttp "universal-media-service/adapters/http"
+	"universal-media-service/adapters/lease"
 	"universal-media-service/adapters/neondb"
 	"universal-media-service/adapters/r2"
 	"universal-media-service/api"
@@ -71,12 +72,14 @@ func main() {
 	uploadService := upload.NewService(mediaRepo, r2Client)
 
 	var cacheClient cacheGetter
+	var leaseStore worker.LeaseStore = worker.NewMemLeaseStore(time.Duration(appCfg.WorkerRetryBaseSecs) * time.Second)
 	if appCfg.RedisURL != "" {
-		rc, err := cache.NewRedisCache(appCfg.RedisURL, time.Duration(appCfg.RedisTTL)*time.Second)
+		rc, err := cache.NewClient(appCfg.RedisURL)
 		if err != nil {
-			slog.Warn("Redis unavailable, proceeding without cache", "error", err)
+			slog.Warn("Redis unavailable, proceeding without cache/leases/events", "error", err)
 		} else {
-			cacheClient = rc
+			cacheClient = cache.NewRedisCacheFromClient(rc, time.Duration(appCfg.RedisTTL)*time.Second)
+			leaseStore = lease.NewRedisLease(rc, time.Duration(appCfg.WorkerRetryBaseSecs)*time.Second)
 		}
 	}
 
@@ -90,7 +93,10 @@ func main() {
 	api.RegisterRoutes(router, mediaHandler, listHandler, shareHandler)
 
 	wpCtx, wpCancel := context.WithCancel(context.Background())
-	wp := worker.New(mediaRepo, r2Client, uploadService.GetImageProcessor(), uploadService.GetVideoProcessor(), uploadService.GetAudioProcessor())
+	wp := worker.New(mediaRepo, r2Client, uploadService.GetImageProcessor(), uploadService.GetVideoProcessor(), uploadService.GetAudioProcessor(),
+		worker.WithLeaseStore(leaseStore),
+		worker.WithRetryMax(appCfg.WorkerMaxAttempts),
+	)
 	go wp.Start(wpCtx)
 
 	addr := ":" + cfg.ServerPort

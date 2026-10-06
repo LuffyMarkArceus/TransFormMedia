@@ -7,8 +7,10 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"universal-media-service/core/events"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
 )
@@ -16,6 +18,135 @@ import (
 type Processor interface {
 	Process(ctx context.Context, data []byte, contentType string) (*media.ProcessedResult, error)
 	SupportedTypes() []string
+}
+
+// LeaseStore claims items so a multi-replica fleet does not process the same
+// row twice, and tracks a per-item retry budget with escalating backoff.
+type LeaseStore interface {
+	// Acquire claims key (returning false if another replica holds it) for a
+	// bounded hold period so a crashed worker's item gets reprocessed.
+	Acquire(ctx context.Context, key string) (bool, error)
+	// Release returns an acquired claim.
+	Release(ctx context.Context, key string) error
+	// PendingRetry reports whether mediaID is inside its backoff window after
+	// a prior transient failure.
+	PendingRetry(ctx context.Context, mediaID string) (bool, error)
+	// IncRetry records one more failed attempt for mediaID, returns the
+	// running attempt count, and arms the backoff gate.
+	IncRetry(ctx context.Context, mediaID string) (int, error)
+	// ResetRetry clears the retry history after a successful run.
+	ResetRetry(ctx context.Context, mediaID string) error
+}
+
+// MemLeaseStore is the single-replica fallback used when Redis is absent. It
+// provides the same retry semantics as RedisLease but cannot arbitrate
+// between processes; each replica keeps its own in-memory budget.
+type MemLeaseStore struct {
+	mu         sync.Mutex
+	retryBase  time.Duration
+	attempts   map[string]int
+	leaseUntil map[string]time.Time
+	retryUntil map[string]time.Time
+}
+
+func NewMemLeaseStore(retryBase time.Duration) *MemLeaseStore {
+	return &MemLeaseStore{
+		retryBase:  retryBase,
+		attempts:   make(map[string]int),
+		leaseUntil: make(map[string]time.Time),
+		retryUntil: make(map[string]time.Time),
+	}
+}
+
+func (m *MemLeaseStore) Acquire(_ context.Context, key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if until, ok := m.leaseUntil[key]; ok && time.Now().Before(until) {
+		return false, nil
+	}
+	m.leaseUntil[key] = time.Now().Add(holdTTL)
+	return true, nil
+}
+
+func (m *MemLeaseStore) Release(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.leaseUntil, key)
+	return nil
+}
+
+func (m *MemLeaseStore) PendingRetry(_ context.Context, mediaID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return time.Now().Before(m.retryUntil[mediaID]), nil
+}
+
+func (m *MemLeaseStore) IncRetry(_ context.Context, mediaID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.attempts[mediaID]++
+	attempt := m.attempts[mediaID]
+	m.retryUntil[mediaID] = time.Now().Add(backoffFor(m.retryBase, attempt))
+	return attempt, nil
+}
+
+func (m *MemLeaseStore) ResetRetry(_ context.Context, mediaID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.attempts, mediaID)
+	delete(m.retryUntil, mediaID)
+	return nil
+}
+
+const (
+	// holdTTL bounds a claim so a crashed worker's item is never stuck; the
+	// Redis lease uses an identical TTL.
+	holdTTL = 10 * time.Minute
+	// itemTimeout bounds one job (download + process + re-upload + DB write)
+	// so a hung operation cannot wedge the poll loop forever.
+	itemTimeout = 10 * time.Minute
+)
+
+// backoffFor doubles the base per attempt, capping at 15 minutes. Kept in
+// sync with adapters/lease so Redis and in-memory stores agree.
+func backoffFor(base time.Duration, attempt int) time.Duration {
+	shift := attempt - 1
+	if shift > 4 {
+		shift = 4
+	}
+	d := base << shift
+	if d > 15*time.Minute {
+		d = 15 * time.Minute
+	}
+	return d
+}
+
+type Option func(*Worker)
+
+// WithLeaseStore attaches a claim/retry store. Without one the worker falls
+// back to single-replica retries via MemLeaseStore.
+func WithLeaseStore(s LeaseStore) Option { return func(w *Worker) { w.leases = s } }
+
+// WithRetryMax sets how many attempts run before an item is marked failed.
+func WithRetryMax(n int) Option {
+	return func(w *Worker) {
+		if n > 0 {
+			w.retryMax = n
+		}
+	}
+}
+
+// WithEvents attaches a status publisher (SSE in the API layer). A nil
+// publisher is tolerated.
+func WithEvents(p events.Publisher) Option { return func(w *Worker) { w.events = p } }
+
+// WithPollInterval overrides the default 10s poll cadence (tests only).
+func WithPollInterval(d time.Duration) Option {
+	return func(w *Worker) {
+		if d > 0 {
+			w.pollInterval = d
+		}
+	}
 }
 
 type Worker struct {
@@ -26,6 +157,9 @@ type Worker struct {
 	audioProcessor Processor
 	pollInterval   time.Duration
 	batchSize      int
+	leases         LeaseStore
+	retryMax       int
+	events         events.Publisher
 }
 
 func New(
@@ -34,8 +168,9 @@ func New(
 	imageProcessor Processor,
 	videoProcessor Processor,
 	audioProcessor Processor,
+	opts ...Option,
 ) *Worker {
-	return &Worker{
+	w := &Worker{
 		repo:           repo,
 		storage:        storage,
 		imageProcessor: imageProcessor,
@@ -43,7 +178,13 @@ func New(
 		audioProcessor: audioProcessor,
 		pollInterval:   10 * time.Second,
 		batchSize:      5,
+		leases:         NewMemLeaseStore(30 * time.Second),
+		retryMax:       5,
 	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 func (w *Worker) Start(ctx context.Context) {
@@ -54,12 +195,20 @@ func (w *Worker) Start(ctx context.Context) {
 			log.Println("Async worker stopped")
 			return
 		case <-time.After(w.pollInterval):
-			w.processBatch(ctx)
+			w.runBatch(ctx)
 		}
 	}
 }
 
-func (w *Worker) processBatch(ctx context.Context) {
+// runBatch wraps the batch in a recover so one bad batch (e.g. a panicking
+// repository) cannot kill the whole poll loop.
+func (w *Worker) runBatch(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Worker: recovered from panic during batch: %v", r)
+		}
+	}()
+
 	items, err := w.repo.ListByStatus(ctx, "uploaded", w.batchSize)
 	if err != nil {
 		log.Printf("Worker: failed to list unprocessed items: %v", err)
@@ -73,12 +222,43 @@ func (w *Worker) processBatch(ctx context.Context) {
 	}
 }
 
-func (w *Worker) processItem(ctx context.Context, item media.Media) error {
+// processItem guards a single job against panics (released lease via
+// defer), so a processor bug corrupts one item instead of the worker.
+func (w *Worker) processItem(ctx context.Context, item media.Media) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Worker: recovered from panic processing %s: %v", item.ID, r)
+			err = fmt.Errorf("panic processing %s: %v", item.ID, r)
+		}
+	}()
+
+	jobCtx, cancel := context.WithTimeout(ctx, itemTimeout)
+	defer cancel()
+
+	leaseKey := leaseKeyFor(item.ID)
+	if w.leases != nil {
+		if pending, err := w.leases.PendingRetry(jobCtx, item.ID); err != nil {
+			log.Printf("Worker: failed to check retry state for %s: %v", item.ID, err)
+		} else if pending {
+			return nil // still in backoff window
+		}
+
+		ok, err := w.leases.Acquire(jobCtx, leaseKey)
+		if err != nil {
+			log.Printf("Worker: failed to acquire lease for %s: %v", item.ID, err)
+		} else if !ok {
+			return nil // another replica owns this item
+		}
+		defer w.leases.Release(jobCtx, leaseKey)
+	}
+
+	return w.process(jobCtx, item)
+}
+
+func (w *Worker) process(ctx context.Context, item media.Media) error {
 	processor := w.getProcessor(item.Type)
 	if processor == nil {
-		log.Printf("Worker: no processor for type %s, marking as failed", item.Type)
-		_ = w.repo.UpdateStatus(ctx, item.ID, item.UserID, "failed")
-		return fmt.Errorf("unsupported type: %s", item.Type)
+		return w.failPermanently(ctx, item, fmt.Errorf("unsupported type: %s", item.Type))
 	}
 
 	log.Printf("Worker: processing item %s (%s)", item.ID, item.Type)
@@ -86,13 +266,12 @@ func (w *Worker) processItem(ctx context.Context, item media.Media) error {
 	sourceKey := extractKey(item.OriginalURL)
 	data, err := w.storage.Get(ctx, sourceKey)
 	if err != nil {
-		return fmt.Errorf("failed to download %s: %w", sourceKey, err)
+		return w.handleFailure(ctx, item, fmt.Errorf("failed to download %s: %w", sourceKey, err))
 	}
 
 	result, err := processor.Process(ctx, data, item.Format)
 	if err != nil {
-		_ = w.repo.UpdateStatus(ctx, item.ID, item.UserID, "failed")
-		return fmt.Errorf("failed to process %s: %w", item.ID, err)
+		return w.handleFailure(ctx, item, fmt.Errorf("failed to process %s: %w", item.ID, err))
 	}
 
 	mediaID := item.ID
@@ -101,7 +280,7 @@ func (w *Worker) processItem(ctx context.Context, item media.Media) error {
 
 	processedKey := fmt.Sprintf("processed/%s/%s/%s", mediaType, userID, mediaID)
 	if _, err := w.storage.Upload(ctx, processedKey, bytes.NewReader(result.ProcessedBytes), result.ProcessedContentType); err != nil {
-		return fmt.Errorf("failed to upload processed %s: %w", mediaID, err)
+		return w.handleFailure(ctx, item, fmt.Errorf("failed to upload processed %s: %w", mediaID, err))
 	}
 
 	var thumbnailKey string
@@ -116,11 +295,62 @@ func (w *Worker) processItem(ctx context.Context, item media.Media) error {
 	processedPublic := fmt.Sprintf("%s/%s", w.storage.PublicBaseURL(), processedKey)
 
 	if err := w.updateProcessedResult(ctx, item.ID, item.UserID, processedPublic, thumbnailKey, result); err != nil {
-		return fmt.Errorf("failed to update media record %s: %w", mediaID, err)
+		return w.handleFailure(ctx, item, fmt.Errorf("failed to update media record %s: %w", mediaID, err))
 	}
 
+	if w.leases != nil {
+		if err := w.leases.ResetRetry(ctx, item.ID); err != nil {
+			log.Printf("Worker: warning: failed to clear retry state for %s: %v", item.ID, err)
+		}
+	}
+	w.publish(ctx, item.UserID, "ready", item.ID)
 	log.Printf("Worker: completed processing item %s (%s)", item.ID, item.Type)
 	return nil
+}
+
+// handleFailure decides whether a transient failure gets another attempt.
+// Transient failures stay "uploaded" and re-run after an escalating backoff;
+// when the budget is exhausted the item is marked failed for good.
+func (w *Worker) handleFailure(ctx context.Context, item media.Media, err error) error {
+	attempt, incErr := w.leases.IncRetry(ctx, item.ID)
+	if incErr != nil {
+		log.Printf("Worker: retry bookkeeping failed for %s: %v", item.ID, incErr)
+		return w.failPermanently(ctx, item, err)
+	}
+
+	if attempt >= w.retryMax {
+		return w.failPermanently(ctx, item, err)
+	}
+
+	log.Printf("Worker: transient failure processing %s (attempt %d/%d): %v", item.ID, attempt, w.retryMax, err)
+	return nil
+}
+
+// failPermanently marks the item as failed, clears its retry history, and
+// announces the transition.
+func (w *Worker) failPermanently(ctx context.Context, item media.Media, err error) error {
+	log.Printf("Worker: giving up on item %s: %v", item.ID, err)
+	if err := w.repo.UpdateStatus(ctx, item.ID, item.UserID, "failed"); err != nil {
+		return fmt.Errorf("failed to mark %s as failed: %w", item.ID, err)
+	}
+	if w.leases != nil {
+		w.leases.ResetRetry(ctx, item.ID)
+	}
+	w.publish(ctx, item.UserID, "failed", item.ID)
+	return err
+}
+
+func (w *Worker) publish(ctx context.Context, userID, status, mediaID string) {
+	if w.events == nil {
+		return
+	}
+	if err := w.events.Publish(ctx, events.Event{Type: events.KindStatus, MediaID: mediaID, UserID: userID, Status: status}); err != nil {
+		log.Printf("Worker: warning: failed to publish %s event for %s: %v", status, mediaID, err)
+	}
+}
+
+func leaseKeyFor(mediaID string) string {
+	return "wlease:" + mediaID
 }
 
 func (w *Worker) updateProcessedResult(ctx context.Context, id, userID, processedURL, thumbnailKey string, result *media.ProcessedResult) error {
