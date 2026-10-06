@@ -5,7 +5,6 @@ type Format string
 const (
 	FormatJPEG Format = "jpeg"
 	FormatPNG  Format = "png"
-	FormatWebP Format = "webp" // future
 )
 
 const (
@@ -43,7 +42,7 @@ type ProcessOptions struct {
 
 	// Output
 	Format  Format
-	Quality int // JPEG/WebP quality (1–100)
+	Quality int // JPEG quality (1–100)
 
 	// Effects
 	Blur      float64 // Gaussian blur sigma (0 = disabled)
@@ -60,7 +59,7 @@ func DefaultOptions() ProcessOptions {
 }
 
 type ThumbnailOptions struct {
-	// Quality is for JPEG/WebP quality (1–100)
+	// Quality is for JPEG quality (1–100)
 	Width   int
 	Height  int
 	Quality int

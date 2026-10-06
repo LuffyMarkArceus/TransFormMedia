@@ -195,15 +195,6 @@ func encode(
 		err := imaging.Encode(buf, img, imaging.PNG)
 		return "image/png", err
 
-	case FormatWebP:
-		err := imaging.Encode(
-			buf,
-			img,
-			imaging.JPEG,
-			imaging.JPEGQuality(quality),
-		)
-		return "image/webp", err
-
 	default:
 		return "", fmt.Errorf("unsupported format: %s", format)
 	}

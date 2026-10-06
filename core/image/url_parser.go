@@ -36,8 +36,6 @@ func ParseProcessOptions(values url.Values) ProcessOptions {
 			opts.Format = FormatJPEG
 		case "png":
 			opts.Format = FormatPNG
-		case "webp":
-			opts.Format = FormatWebP
 		default:
 			// Unsupported format; keep default
 			opts.Format = DefaultOptions().Format

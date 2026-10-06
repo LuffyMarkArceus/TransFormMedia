@@ -10,7 +10,7 @@
 - [x] User-scoped authorization
 - [x] Public vs private image access (status-based filtering)
 - [x] Signed URLs for sharing (HMAC-based, 7-day expiry)
-- [x] Rate limiting (in-memory sliding window, 100 req/min)
+- [x] Rate limiting (in-memory token bucket, 100 req/min per user)
 
 ## Image Upload
 - [x] Multipart upload handling
@@ -25,7 +25,7 @@
 ## Image Processing
 - [x] Centralized image processor
 - [x] Resizing with Lanczos
-- [x] JPEG, PNG & WebP support
+- [x] JPEG & PNG support
 - [x] Quality control
 - [x] Thumbnail generation
 - [x] Blur effect (Gaussian, sigma 0–20)
@@ -37,7 +37,7 @@
 - [x] URL-based processing parameters
 - [x] Width & height via query params
 - [x] Crop width/height + gravity via query params
-- [x] Format selection via query params (jpeg/png/webp)
+- [x] Format selection via query params (jpeg/png)
 - [x] Quality control via query params
 - [x] Blur & grayscale via query params
 - [x] Processed image caching (Redis)
