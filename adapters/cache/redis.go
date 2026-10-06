@@ -8,6 +8,8 @@ import (
 	"log"
 	"time"
 
+	"universal-media-service/core/image"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -32,14 +34,18 @@ func NewRedisCache(redisURL string, ttl time.Duration) (*RedisCache, error) {
 	return &RedisCache{client: client, ttl: ttl}, nil
 }
 
-func processCacheKey(mediaID string, width, height, quality int, format string) string {
+// processCacheKey fingerprints the transform options, not just the output
+// format: two requests that differ in width, gravity, blur, etc. must never
+// share a cached entry. The key embeds mediaID so per-media invalidation
+// (InvalidateMedia) can scan for it.
+func processCacheKey(mediaID string, opts image.ProcessOptions) string {
 	h := sha1.New()
-	h.Write([]byte(fmt.Sprintf("%s:%d:%d:%d:%s", mediaID, width, height, quality, format)))
-	return "proc:" + hex.EncodeToString(h.Sum(nil))
+	h.Write([]byte(fmt.Sprintf("%s:%+v", mediaID, opts)))
+	return "proc:" + mediaID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-func (r *RedisCache) GetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string) ([]byte, bool, error) {
-	key := processCacheKey(mediaID, width, height, quality, format)
+func (r *RedisCache) GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error) {
+	key := processCacheKey(mediaID, opts)
 	data, err := r.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, false, nil
@@ -50,8 +56,8 @@ func (r *RedisCache) GetProcessed(ctx context.Context, mediaID string, width, he
 	return data, true, nil
 }
 
-func (r *RedisCache) SetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string, data []byte) error {
-	key := processCacheKey(mediaID, width, height, quality, format)
+func (r *RedisCache) SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error {
+	key := processCacheKey(mediaID, opts)
 	return r.client.Set(ctx, key, data, r.ttl).Err()
 }
 

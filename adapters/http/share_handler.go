@@ -41,6 +41,9 @@ func (h *ShareHandler) Generate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load media"})
 		return
 	}
+	if !requireVisible(c, m) {
+		return
+	}
 
 	ttl := time.Duration(h.shareTTL) * time.Second
 	token := auth.GenerateShareToken(m.ID, userID, h.shareSecret, ttl)
@@ -74,6 +77,11 @@ func (h *ShareHandler) ServeShared(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "media not found"})
+		return
+	}
+	// Once the owner has trashed media, previously issued share links go
+	// dead too.
+	if !requireVisible(c, m) {
 		return
 	}
 

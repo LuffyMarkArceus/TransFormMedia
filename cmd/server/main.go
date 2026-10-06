@@ -17,6 +17,7 @@ import (
 	"universal-media-service/adapters/r2"
 	"universal-media-service/api"
 	"universal-media-service/core/auth"
+	"universal-media-service/core/image"
 	"universal-media-service/core/media"
 	"universal-media-service/core/upload"
 	"universal-media-service/core/worker"
@@ -26,8 +27,8 @@ import (
 )
 
 type cacheGetter interface {
-	GetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string) ([]byte, bool, error)
-	SetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string, data []byte) error
+	GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error)
+	SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error
 }
 
 func main() {
@@ -100,6 +101,13 @@ func main() {
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: router,
+
+		// Slowloris protection: headers must arrive promptly.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// Deliberately no ReadTimeout/WriteTimeout: large media uploads over
+		// slow links are legitimate and would be cut off mid-body. Request
+		// body size is bounded per-route with http.MaxBytesReader instead.
 	}
 
 	go func() {

@@ -27,8 +27,8 @@ type MediaListHandler struct {
 }
 
 type cacheGetter interface {
-	GetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string) ([]byte, bool, error)
-	SetProcessed(ctx context.Context, mediaID string, width, height, quality int, format string, data []byte) error
+	GetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions) ([]byte, bool, error)
+	SetProcessed(ctx context.Context, mediaID string, opts image.ProcessOptions, data []byte) error
 }
 
 type RenameMediaRequest struct {
@@ -60,15 +60,22 @@ func (h *MediaUploadHandler) Replace(c *gin.Context) {
 
 	mediaID := c.Param("id")
 
+	// Cap the body while it is being read: multipart parsing spools the
+	// whole body to temp files, so a post-hoc size check would be too late.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBody)
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		if isBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
 		return
 	}
 
 	const maxFileSize = 500 * 1024 * 1024
 	if fileHeader.Size > maxFileSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
 		return
 	}
 
@@ -144,15 +151,22 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
+	// Cap the body while it is being read: multipart parsing spools the
+	// whole body to temp files, so a post-hoc size check would be too late.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBody)
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		if isBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
 		return
 	}
 
 	const maxFileSize = 500 * 1024 * 1024
 	if fileHeader.Size > maxFileSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
 		return
 	}
 
@@ -224,10 +238,19 @@ func (h *MediaListHandler) List(c *gin.Context) {
 		Limit:   limit,
 		Offset:  offset,
 	}
+	// Clamp exactly like the repository does, so the echoed page/limit
+	// metadata matches what was actually returned.
+	if params.Limit <= 0 || params.Limit > media.MaxLimit {
+		params.Limit = media.DefaultLimit
+	}
+	if params.Offset < 0 {
+		params.Offset = media.DefaultOffset
+	}
 
 	result, err := h.repo.ListPaginated(c.Request.Context(), params)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("List: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list media"})
 		return
 	}
 
@@ -252,8 +275,15 @@ func (h *MediaUploadHandler) BatchDelete(c *gin.Context) {
 	}
 
 	var req BatchDeleteRequest
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.IDs) == 0 {
+	if !bindJSON(c, &req) {
+		return
+	}
+	if len(req.IDs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if len(req.IDs) > maxBatchDelete {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many ids (max %d)", maxBatchDelete)})
 		return
 	}
 
@@ -348,7 +378,10 @@ func (h *MediaListHandler) Rename(c *gin.Context) {
 	}
 
 	var req RenameMediaRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+	if !bindJSON(c, &req) {
+		return
+	}
+	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
@@ -379,6 +412,9 @@ func (h *MediaListHandler) Status(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load media"})
 		return
 	}
+	if !requireVisible(c, m) {
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":     m.ID,
@@ -399,6 +435,9 @@ func (h *MediaListHandler) Info(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load media"})
+		return
+	}
+	if !requireVisible(c, m) {
 		return
 	}
 
@@ -438,6 +477,9 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load media"})
 		return
 	}
+	if !requireVisible(c, m) {
+		return
+	}
 
 	if m.Type != "image" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "dynamic processing only supported for images"})
@@ -447,7 +489,7 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 	processOpts := image.ParseProcessOptions(c.Request.URL.Query())
 
 	if h.cache != nil {
-		if cached, ok, err := h.cache.GetProcessed(ctx, mediaID, processOpts.MaxWidth, processOpts.MaxHeight, processOpts.Quality, string(processOpts.Format)); err == nil && ok {
+		if cached, ok, err := h.cache.GetProcessed(ctx, mediaID, processOpts); err == nil && ok {
 			contentType := "image/" + string(processOpts.Format)
 			c.Header("Content-Type", contentType)
 			c.Header("Content-Disposition", "inline")
@@ -480,7 +522,7 @@ func (h *MediaListHandler) ServeProcessed(c *gin.Context) {
 	}
 
 	if h.cache != nil {
-		if err := h.cache.SetProcessed(ctx, mediaID, processOpts.MaxWidth, processOpts.MaxHeight, processOpts.Quality, string(processOpts.Format), result); err != nil {
+		if err := h.cache.SetProcessed(ctx, mediaID, processOpts, result); err != nil {
 			log.Printf("Warning: failed to cache processed %s: %v", mediaID, err)
 		} else {
 			log.Printf("Cached processed result for %s", mediaID)
