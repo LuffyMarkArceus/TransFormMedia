@@ -50,7 +50,9 @@ section() {
 }
 
 section "1. Health & readiness (no auth)"
-assert_status "GET /healthz" GET "/healthz" 200
+# /healthz is intercepted by Google's frontend (HTML 404) when reached from
+# outside Cloud Run, so the reachable liveness alias is /health.
+assert_status "GET /health" GET "/health" 200
 assert_status "GET /readyz (DB ping)" GET "/readyz" 200
 
 section "2. Protected routes reject missing auth"

@@ -8,9 +8,15 @@ import (
 )
 
 func RegisterHealthRoutes(r *gin.Engine, db *pgxpool.Pool) {
-	r.GET("/healthz", func(c *gin.Context) {
+	// /healthz is the conventional path, but Google's frontend answers the
+	// exact bare path with its own HTML 404 before the request reaches this
+	// service (gin's trailing-slash redirect for "/healthz/" proves the route
+	// is registered). /health is the externally reachable liveness probe.
+	ok := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	}
+	r.GET("/health", ok)
+	r.GET("/healthz", ok)
 
 	r.GET("/readyz", func(c *gin.Context) {
 		if db == nil {
