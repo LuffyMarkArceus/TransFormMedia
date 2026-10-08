@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -95,9 +96,12 @@ func (r *PostgresRepository) ListPaginated(ctx context.Context, params ListParam
 		args = append(args, params.Status)
 		argIdx++
 	} else {
-		whereClause += " AND status != $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, "trashed")
-		argIdx++
+		// Default view: skip trash AND in-flight direct uploads (their
+		// objects may not exist yet, so they must not render in the grid).
+		whereClause += " AND status NOT IN ($" + fmt.Sprintf("%d", argIdx) + ", $"
+		whereClause += fmt.Sprintf("%d)", argIdx+1)
+		args = append(args, "trashed", "pending")
+		argIdx += 2
 	}
 
 	if params.Type != "" {
@@ -462,4 +466,53 @@ func (r *PostgresRepository) UpdateProcessedResult(
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SumSizeByUser totals size_bytes across all of a user's rows (including
+// trashed and pending).
+func (r *PostgresRepository) SumSizeByUser(ctx context.Context, userID string) (int64, error) {
+	var total int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(size_bytes), 0) FROM media WHERE user_id = $1`,
+		userID,
+	).Scan(&total)
+	return total, err
+}
+
+// ListStalePending returns pending direct-upload rows created before cutoff.
+func (r *PostgresRepository) ListStalePending(ctx context.Context, cutoff time.Time, limit int) ([]Media, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+
+	rows, err := r.db.Query(ctx,
+		`SELECT id, user_id, name, type, original_url, COALESCE(processed_url, ''),
+		        COALESCE(thumbnail_url, ''), COALESCE(format, ''), size_bytes,
+		        COALESCE(width,0), COALESCE(height,0), COALESCE(duration_seconds,0),
+		        status, created_at, COALESCE(updated_at, created_at) AS updated_at
+		 FROM media
+		 WHERE status = 'pending' AND created_at < $1
+		 ORDER BY created_at ASC
+		 LIMIT $2`,
+		cutoff, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mediaList []Media
+	for rows.Next() {
+		var m Media
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.Name, &m.Type, &m.OriginalURL,
+			&m.ProcessedURL, &m.ThumbnailURL, &m.Format, &m.SizeBytes,
+			&m.Width, &m.Height, &m.Duration, &m.Status, &m.CreatedAt,
+			&m.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		mediaList = append(mediaList, m)
+	}
+	return mediaList, rows.Err()
 }

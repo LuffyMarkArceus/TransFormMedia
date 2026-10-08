@@ -2,10 +2,12 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"universal-media-service/core/image"
 	"universal-media-service/core/media"
+	"universal-media-service/core/upload"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,7 +34,32 @@ func respondMediaError(c *gin.Context, err error) bool {
 		c.JSON(http.StatusNotFound, gin.H{"error": "media not found"})
 		return true
 	}
-	return false
+	switch {
+	case errors.Is(err, upload.ErrUnsupportedType):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
+	case errors.Is(err, upload.ErrInvalidRequest):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	case errors.Is(err, upload.ErrFileTooLarge):
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+	case errors.Is(err, upload.ErrQuotaExceeded):
+		c.JSON(http.StatusConflict, gin.H{"error": "storage quota exceeded"})
+	case errors.Is(err, upload.ErrUploadNotStarted):
+		c.JSON(http.StatusConflict, gin.H{"error": "uploaded file not found in storage"})
+	case errors.Is(err, upload.ErrSizeMismatch):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded file is larger than declared"})
+	case errors.Is(err, upload.ErrContentMismatch):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded file content does not match the declared type"})
+	default:
+		return false
+	}
+	return true
+}
+
+// fileTooLarge writes the standard 413 for a file that exceeds cap bytes.
+func fileTooLarge(c *gin.Context, cap int64) {
+	c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+		"error": fmt.Sprintf("file size exceeds the %d MB limit", cap/(1024*1024)),
+	})
 }
 
 // requireVisible stops the handler with a 404 when media has been moved to

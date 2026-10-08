@@ -34,20 +34,13 @@ func (p *Processor) SupportedTypes() []string {
 	return []string{"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska"}
 }
 
-func (p *Processor) Process(ctx context.Context, data []byte, contentType string) (*media.ProcessedResult, error) {
-	tmpDir, err := os.MkdirTemp("", "video-process")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	inputPath := filepath.Join(tmpDir, "input")
-	outputPath := filepath.Join(tmpDir, "output.mp4")
-	thumbnailPath := filepath.Join(tmpDir, "thumb.jpg")
-
-	if err := os.WriteFile(inputPath, data, 0644); err != nil {
-		return nil, fmt.Errorf("failed to write input file: %w", err)
-	}
+// ProcessFile runs the pipeline against an existing input file, writing
+// outputs into the caller-owned workDir and returning their paths. Nothing
+// whole-file is held in memory, so arbitrarily large videos can be processed
+// on small instances.
+func (p *Processor) ProcessFile(ctx context.Context, inputPath, contentType, workDir string) (*media.FileResult, error) {
+	outputPath := filepath.Join(workDir, "output.mp4")
+	thumbnailPath := filepath.Join(workDir, "thumb.jpg")
 
 	metadata, err := p.extractMetadata(inputPath)
 	if err != nil {
@@ -62,24 +55,52 @@ func (p *Processor) Process(ctx context.Context, data []byte, contentType string
 		return nil, fmt.Errorf("failed to copy video: %w", err)
 	}
 
-	processedBytes, err := os.ReadFile(outputPath)
+	return &media.FileResult{
+		Width:                metadata.Width,
+		Height:               metadata.Height,
+		Duration:             metadata.Duration,
+		OutputPath:           outputPath,
+		ThumbnailPath:        thumbnailPath,
+		OutputContentType:    "video/mp4",
+		ThumbnailContentType: "image/jpeg",
+	}, nil
+}
+
+func (p *Processor) Process(ctx context.Context, data []byte, contentType string) (*media.ProcessedResult, error) {
+	tmpDir, err := os.MkdirTemp("", "video-process")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	inputPath := filepath.Join(tmpDir, "input")
+	if err := os.WriteFile(inputPath, data, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write input file: %w", err)
+	}
+
+	result, err := p.ProcessFile(ctx, inputPath, contentType, tmpDir)
+	if err != nil {
+		return nil, err
+	}
+
+	processedBytes, err := os.ReadFile(result.OutputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read output file: %w", err)
 	}
 
-	thumbnailBytes, err := os.ReadFile(thumbnailPath)
+	thumbnailBytes, err := os.ReadFile(result.ThumbnailPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read thumbnail: %w", err)
 	}
 
 	return &media.ProcessedResult{
-		Width:                metadata.Width,
-		Height:               metadata.Height,
-		Duration:             metadata.Duration,
+		Width:                result.Width,
+		Height:               result.Height,
+		Duration:             result.Duration,
 		ProcessedBytes:       processedBytes,
 		ThumbnailBytes:       thumbnailBytes,
-		ProcessedContentType: "video/mp4",
-		ThumbnailContentType: "image/jpeg",
+		ProcessedContentType: result.OutputContentType,
+		ThumbnailContentType: result.ThumbnailContentType,
 	}, nil
 }
 

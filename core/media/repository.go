@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"time"
 )
 
 const (
@@ -21,7 +22,7 @@ type ListParams struct {
 	UserID  string
 	Type    string // optional type filter
 	Search  string // optional name search (ILIKE)
-	Status  string // optional status filter (default excludes "trashed")
+	Status  string // optional status filter (default excludes "trashed" and "pending")
 	SortBy  string // SortByCreatedAt, SortByName, SortBySize
 	SortDir string // SortDirDesc or SortDirAsc
 	Limit   int
@@ -52,4 +53,13 @@ type Repository interface {
 	// in place. It never changes id, user_id or created_at, and returns
 	// ErrNotFound when the row does not exist or belongs to another user.
 	UpdateContent(ctx context.Context, m *Media) error
+
+	// SumSizeByUser totals size_bytes across all of a user's rows. Trashed
+	// and pending rows are included: they still occupy objects or reserve
+	// quota for an in-flight direct upload.
+	SumSizeByUser(ctx context.Context, userID string) (int64, error)
+
+	// ListStalePending returns "pending" direct-upload rows older than
+	// cutoff, oldest first. The worker sweeps them (row + object).
+	ListStalePending(ctx context.Context, cutoff time.Time, limit int) ([]Media, error)
 }

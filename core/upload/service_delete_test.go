@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"universal-media-service/core/media"
 )
@@ -66,6 +67,10 @@ func (s *stubRepo) UpdateProcessedResult(context.Context, string, string, string
 func (s *stubRepo) UpdateContent(context.Context, *media.Media) error {
 	return nil
 }
+func (s *stubRepo) SumSizeByUser(context.Context, string) (int64, error) { return 0, nil }
+func (s *stubRepo) ListStalePending(context.Context, time.Time, int) ([]media.Media, error) {
+	return nil, nil
+}
 
 type stubStorage struct {
 	deletedKeys []string
@@ -86,7 +91,19 @@ func (s *stubStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 func (s *stubStorage) Get(context.Context, string) ([]byte, error) { return nil, nil }
-func (s *stubStorage) PublicBaseURL() string                       { return "https://cdn.example.com" }
+func (s *stubStorage) DownloadTo(context.Context, string, io.Writer) (int64, error) {
+	return 0, nil
+}
+func (s *stubStorage) Head(context.Context, string) (ObjectInfo, error) {
+	return ObjectInfo{}, ErrObjectNotFound
+}
+func (s *stubStorage) GetRange(context.Context, string, int64, int64) ([]byte, error) {
+	return nil, ErrObjectNotFound
+}
+func (s *stubStorage) PresignPut(context.Context, string, string, time.Duration) (string, error) {
+	return "https://cdn.example.com/presigned", nil
+}
+func (s *stubStorage) PublicBaseURL() string { return "https://cdn.example.com" }
 
 func TestDeleteMedia_SoftDeleteDoesNotTouchStorage(t *testing.T) {
 	processed := "https://cdn.example.com/processed/x"

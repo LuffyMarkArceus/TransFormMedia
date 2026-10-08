@@ -519,3 +519,5 @@ processed:{imageID}:{hash(params)}
 | Holding compare button triggers network request | `comparing` state in parent causes re-render cascade | Move transient UI state to local component state |
 | Docker push fails with auth error | Not authenticated with Artifact Registry | Run `gcloud auth configure-docker us-central1-docker.pkg.dev` |
 | Auth works locally but fails in production | CORS middleware runs after auth middleware | CORS middleware must be first in the chain |
+| Presigned PUT ignores `Content-Type` mismatches | aws-sdk-go-v2 signs only `host` for `PresignPutObject` (`X-Amz-SignedHeaders=host`) even when `ContentType` is set | Never rely on signed Content-Type — verify bytes server-side after upload (family sniff in `core/media/sniff.go`) |
+| `http.DetectContentType` says `application/octet-stream` for your mp4 | Go's sniffer has no mp4/mov/flac/mp3/aac patterns | Use `core/media/sniff.go` (ffmpeg-compatible magic numbers) before any MIME decision |

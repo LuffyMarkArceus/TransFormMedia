@@ -7,6 +7,8 @@ import (
 	"image"
 	"io"
 	"mime/multipart"
+	"os"
+	"path/filepath"
 
 	_ "image/jpeg"
 	_ "image/png"
@@ -40,6 +42,43 @@ func (p *Processor) Process(ctx context.Context, data []byte, contentType string
 		return nil, err
 	}
 	return result, nil
+}
+
+// ProcessFile processes an image from disk and writes the outputs into the
+// caller-owned workDir. Image inputs are capped at MaxImageBytes upstream, so
+// reading them is bounded; decoded dimensions are additionally checked
+// against MaxAllowedWidth/Height inside Process.
+func (p *Processor) ProcessFile(ctx context.Context, inputPath, contentType, workDir string) (*media.FileResult, error) {
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read input file: %w", err)
+	}
+
+	result, err := p.Process(ctx, data, contentType)
+	if err != nil {
+		return nil, err
+	}
+
+	outputPath := filepath.Join(workDir, "output")
+	if err := os.WriteFile(outputPath, result.ProcessedBytes, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write output file: %w", err)
+	}
+
+	fr := &media.FileResult{
+		Width:             result.Width,
+		Height:            result.Height,
+		OutputPath:        outputPath,
+		OutputContentType: result.ProcessedContentType,
+	}
+	if len(result.ThumbnailBytes) > 0 {
+		thumbnailPath := filepath.Join(workDir, "thumb.jpg")
+		if err := os.WriteFile(thumbnailPath, result.ThumbnailBytes, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write thumbnail: %w", err)
+		}
+		fr.ThumbnailPath = thumbnailPath
+		fr.ThumbnailContentType = result.ThumbnailContentType
+	}
+	return fr, nil
 }
 
 func (p *Processor) ProcessStream(ctx context.Context, file multipart.File, contentType string, size int64) (*media.ProcessedResult, error) {

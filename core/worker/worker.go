@@ -1,11 +1,13 @@
 package worker
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +17,13 @@ import (
 	"universal-media-service/core/upload"
 )
 
+// Processor runs a media job against a local file. The worker streams the
+// source object into a temp file first, so no processor ever holds a whole
+// file in memory — multi-hundred-MB jobs fit in a 512 Mi instance.
 type Processor interface {
-	Process(ctx context.Context, data []byte, contentType string) (*media.ProcessedResult, error)
+	// ProcessFile reads inputPath and writes the outputs into the
+	// caller-owned workDir, returning their paths (see media.FileResult).
+	ProcessFile(ctx context.Context, inputPath, contentType, workDir string) (*media.FileResult, error)
 	SupportedTypes() []string
 }
 
@@ -105,6 +112,15 @@ const (
 	// itemTimeout bounds one job (download + process + re-upload + DB write)
 	// so a hung operation cannot wedge the poll loop forever.
 	itemTimeout = 10 * time.Minute
+
+	// pendingSweepInterval is how often abandoned direct uploads are reaped.
+	pendingSweepInterval = 5 * time.Minute
+	// pendingSweepAge is how long a "pending" row may sit uncompleted before
+	// its row and object are deleted. Generous: slow clients get presigned
+	// URLs valid 30 minutes and up to ~2h from begin to complete.
+	pendingSweepAge = 2 * time.Hour
+	// pendingSweepBatch bounds one sweep run.
+	pendingSweepBatch = 50
 )
 
 // backoffFor doubles the base per attempt, capping at 15 minutes. Kept in
@@ -189,6 +205,8 @@ func New(
 
 func (w *Worker) Start(ctx context.Context) {
 	log.Println("Async worker started (poll interval: 10s)")
+	sweepTicker := time.NewTicker(pendingSweepInterval)
+	defer sweepTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -196,6 +214,8 @@ func (w *Worker) Start(ctx context.Context) {
 			return
 		case <-time.After(w.pollInterval):
 			w.runBatch(ctx)
+		case <-sweepTicker.C:
+			w.sweepPending(ctx)
 		}
 	}
 }
@@ -263,13 +283,21 @@ func (w *Worker) process(ctx context.Context, item media.Media) error {
 
 	log.Printf("Worker: processing item %s (%s)", item.ID, item.Type)
 
-	sourceKey := extractKey(item.OriginalURL)
-	data, err := w.storage.Get(ctx, sourceKey)
+	// Stream the source object into a temp file; only bounded buffers live
+	// in memory from here on.
+	tmpDir, err := os.MkdirTemp("", "worker-*")
 	if err != nil {
+		return w.handleFailure(ctx, item, fmt.Errorf("failed to create work dir: %w", err))
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sourceKey := extractKey(item.OriginalURL)
+	inputPath := filepath.Join(tmpDir, "input")
+	if err := w.downloadTo(ctx, sourceKey, inputPath); err != nil {
 		return w.handleFailure(ctx, item, fmt.Errorf("failed to download %s: %w", sourceKey, err))
 	}
 
-	result, err := processor.Process(ctx, data, item.Format)
+	result, err := processor.ProcessFile(ctx, inputPath, item.Format, tmpDir)
 	if err != nil {
 		return w.handleFailure(ctx, item, fmt.Errorf("failed to process %s: %w", item.ID, err))
 	}
@@ -279,14 +307,14 @@ func (w *Worker) process(ctx context.Context, item media.Media) error {
 	mediaType := item.Type
 
 	processedKey := fmt.Sprintf("processed/%s/%s/%s", mediaType, userID, mediaID)
-	if _, err := w.storage.Upload(ctx, processedKey, bytes.NewReader(result.ProcessedBytes), result.ProcessedContentType); err != nil {
+	if err := w.uploadFile(ctx, processedKey, result.OutputPath, result.OutputContentType); err != nil {
 		return w.handleFailure(ctx, item, fmt.Errorf("failed to upload processed %s: %w", mediaID, err))
 	}
 
-	var thumbnailKey string
-	if len(result.ThumbnailBytes) > 0 {
+	thumbnailKey := ""
+	if result.ThumbnailPath != "" {
 		thumbnailKey = fmt.Sprintf("thumbnail/%s/%s/%s", mediaType, userID, mediaID)
-		if _, err := w.storage.Upload(ctx, thumbnailKey, bytes.NewReader(result.ThumbnailBytes), result.ThumbnailContentType); err != nil {
+		if err := w.uploadFile(ctx, thumbnailKey, result.ThumbnailPath, result.ThumbnailContentType); err != nil {
 			log.Printf("Worker: warning: failed to upload thumbnail for %s: %v", mediaID, err)
 			thumbnailKey = ""
 		}
@@ -306,6 +334,61 @@ func (w *Worker) process(ctx context.Context, item media.Media) error {
 	w.publish(ctx, item.UserID, "ready", item.ID)
 	log.Printf("Worker: completed processing item %s (%s)", item.ID, item.Type)
 	return nil
+}
+
+// downloadTo streams an object to a local file path.
+func (w *Worker) downloadTo(ctx context.Context, key, dstPath string) error {
+	f, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	_, err = w.storage.DownloadTo(ctx, key, f)
+	cerr := f.Close()
+	if err != nil {
+		return err
+	}
+	return cerr
+}
+
+// uploadFile streams a local file into storage without buffering it.
+func (w *Worker) uploadFile(ctx context.Context, key, path, contentType string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = w.storage.Upload(ctx, key, f, contentType)
+	return err
+}
+
+// sweepPending reaps abandoned direct uploads: "pending" rows older than
+// pendingSweepAge lose their object and their row. Runs on its own ticker;
+// failures are logged and retried next tick (stale rows stay queryable).
+func (w *Worker) sweepPending(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Worker: recovered from panic during pending sweep: %v", r)
+		}
+	}()
+
+	cutoff := time.Now().Add(-pendingSweepAge)
+	stale, err := w.repo.ListStalePending(ctx, cutoff, pendingSweepBatch)
+	if err != nil {
+		log.Printf("Worker: failed to list stale pending uploads: %v", err)
+		return
+	}
+	for _, m := range stale {
+		key := extractKey(m.OriginalURL)
+		if err := w.storage.Delete(ctx, key); err != nil && !errors.Is(err, upload.ErrObjectNotFound) {
+			log.Printf("Worker: sweep %s: object delete failed (will retry): %v", m.ID, err)
+			continue
+		}
+		if err := w.repo.DeleteByID(ctx, m.ID, m.UserID); err != nil {
+			log.Printf("Worker: sweep %s: row delete failed (will retry): %v", m.ID, err)
+			continue
+		}
+		log.Printf("Worker: swept abandoned pending upload %s (%s, %d bytes)", m.ID, m.Type, m.SizeBytes)
+	}
 }
 
 // handleFailure decides whether a transient failure gets another attempt.
@@ -353,7 +436,7 @@ func leaseKeyFor(mediaID string) string {
 	return "wlease:" + mediaID
 }
 
-func (w *Worker) updateProcessedResult(ctx context.Context, id, userID, processedURL, thumbnailKey string, result *media.ProcessedResult) error {
+func (w *Worker) updateProcessedResult(ctx context.Context, id, userID, processedURL, thumbnailKey string, result *media.FileResult) error {
 	var thumbPublic string
 	if thumbnailKey != "" {
 		thumbPublic = fmt.Sprintf("%s/%s", w.storage.PublicBaseURL(), thumbnailKey)

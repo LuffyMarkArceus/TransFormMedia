@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"universal-media-service/core/events"
 	"universal-media-service/core/media"
+	"universal-media-service/core/upload"
 )
 
 // --- fakes ---
@@ -19,6 +22,11 @@ type fakeRepo struct {
 	statuses    []string
 	processed   int
 	processedID string
+
+	stale      []media.Media
+	deletedIDs []string
+	deleteErr  error
+	sumSize    int64
 }
 
 func (f *fakeRepo) Create(context.Context, *media.Media) error { return nil }
@@ -40,7 +48,13 @@ func (f *fakeRepo) GetByID(context.Context, string) (*media.Media, error) {
 func (f *fakeRepo) GetByIDForUser(context.Context, string, string) (*media.Media, error) {
 	return nil, media.ErrNotFound
 }
-func (f *fakeRepo) DeleteByID(context.Context, string, string) error { return nil }
+func (f *fakeRepo) DeleteByID(_ context.Context, id, _ string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedIDs = append(f.deletedIDs, id)
+	return nil
+}
 func (f *fakeRepo) UpdateName(context.Context, string, string, string) error {
 	return nil
 }
@@ -54,6 +68,12 @@ func (f *fakeRepo) UpdateProcessedResult(_ context.Context, id, _, _ string, _ s
 	return nil
 }
 func (f *fakeRepo) UpdateContent(context.Context, *media.Media) error { return nil }
+func (f *fakeRepo) SumSizeByUser(context.Context, string) (int64, error) {
+	return f.sumSize, nil
+}
+func (f *fakeRepo) ListStalePending(context.Context, time.Time, int) ([]media.Media, error) {
+	return f.stale, nil
+}
 
 type fakeStorage struct {
 	mu         sync.Mutex
@@ -61,6 +81,9 @@ type fakeStorage struct {
 	getErr     error
 	getCount   int
 	uploadKeys []string
+
+	deleteErr   error
+	deletedKeys []string
 }
 
 func (s *fakeStorage) Upload(_ context.Context, key string, _ io.Reader, _ string) (string, error) {
@@ -69,12 +92,43 @@ func (s *fakeStorage) Upload(_ context.Context, key string, _ io.Reader, _ strin
 	s.uploadKeys = append(s.uploadKeys, key)
 	return "https://cdn.example.com/" + key, nil
 }
-func (s *fakeStorage) Delete(context.Context, string) error { return nil }
+func (s *fakeStorage) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.deletedKeys = append(s.deletedKeys, key)
+	return nil
+}
 func (s *fakeStorage) Get(_ context.Context, _ string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.getCount++
 	return s.getBytes, s.getErr
+}
+
+// DownloadTo mirrors Get: it counts as a download and streams getBytes into
+// dst, so the worker's file-based pipeline sees the same fixture data.
+func (s *fakeStorage) DownloadTo(_ context.Context, _ string, dst io.Writer) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getCount++
+	if s.getErr != nil {
+		return 0, s.getErr
+	}
+	n, err := dst.Write(s.getBytes)
+	return int64(n), err
+}
+
+func (s *fakeStorage) Head(context.Context, string) (upload.ObjectInfo, error) {
+	return upload.ObjectInfo{}, upload.ErrObjectNotFound
+}
+func (s *fakeStorage) GetRange(context.Context, string, int64, int64) ([]byte, error) {
+	return nil, upload.ErrObjectNotFound
+}
+func (s *fakeStorage) PresignPut(context.Context, string, string, time.Duration) (string, error) {
+	return "https://cdn.example.com/presigned", nil
 }
 func (s *fakeStorage) PublicBaseURL() string { return "https://cdn.example.com" }
 
@@ -84,14 +138,40 @@ type fakeProcessor struct {
 	panic  bool
 }
 
-func (p *fakeProcessor) Process(_ context.Context, _ []byte, _ string) (*media.ProcessedResult, error) {
+// ProcessFile materialises the configured ProcessedResult as files inside
+// workDir, exactly like the real processors do.
+func (p *fakeProcessor) ProcessFile(_ context.Context, _ string, _ string, workDir string) (*media.FileResult, error) {
 	if p.panic {
 		panic("processor exploded")
 	}
 	if p.err != nil {
 		return nil, p.err
 	}
-	return p.result, nil
+	if p.result == nil {
+		return nil, errors.New("no configured result")
+	}
+	r := p.result
+
+	outPath := filepath.Join(workDir, "output")
+	if err := os.WriteFile(outPath, r.ProcessedBytes, 0644); err != nil {
+		return nil, err
+	}
+	fr := &media.FileResult{
+		Width:             r.Width,
+		Height:            r.Height,
+		Duration:          r.Duration,
+		OutputPath:        outPath,
+		OutputContentType: r.ProcessedContentType,
+	}
+	if len(r.ThumbnailBytes) > 0 {
+		thumbPath := filepath.Join(workDir, "thumb")
+		if err := os.WriteFile(thumbPath, r.ThumbnailBytes, 0644); err != nil {
+			return nil, err
+		}
+		fr.ThumbnailPath = thumbPath
+		fr.ThumbnailContentType = r.ThumbnailContentType
+	}
+	return fr, nil
 }
 func (p *fakeProcessor) SupportedTypes() []string { return []string{"image"} }
 
@@ -394,5 +474,60 @@ func TestMemLeaseStore_RetryBackoffGateAndReset(t *testing.T) {
 	attempt, _ := store.IncRetry(ctx, "media-1")
 	if attempt != 1 {
 		t.Fatalf("retry budget must restart after reset, got attempt %d", attempt)
+	}
+}
+
+func TestSweepPending_DeletesStaleRowAndObject(t *testing.T) {
+	repo := &fakeRepo{stale: []media.Media{{
+		ID:          "media-1",
+		UserID:      "user-1",
+		Type:        "video",
+		Status:      "pending",
+		OriginalURL: "https://cdn.example.com/raw/video/user-1/media-1",
+	}}}
+	storage := &fakeStorage{}
+	w := testWorker(repo, storage, &fakeProcessor{}, &scriptedLease{acquireResult: true}, 5)
+
+	w.sweepPending(context.Background())
+
+	if len(storage.deletedKeys) != 1 || storage.deletedKeys[0] != "raw/video/user-1/media-1" {
+		t.Fatalf("expected the object to be deleted, got %v", storage.deletedKeys)
+	}
+	if len(repo.deletedIDs) != 1 || repo.deletedIDs[0] != "media-1" {
+		t.Fatalf("expected the stale row to be deleted, got %v", repo.deletedIDs)
+	}
+}
+
+func TestSweepPending_KeepsRowWhenObjectDeleteFails(t *testing.T) {
+	repo := &fakeRepo{stale: []media.Media{{
+		ID:          "media-1",
+		UserID:      "user-1",
+		Status:      "pending",
+		OriginalURL: "https://cdn.example.com/raw/video/user-1/media-1",
+	}}}
+	storage := &fakeStorage{deleteErr: errors.New("r2 unavailable")}
+	w := testWorker(repo, storage, &fakeProcessor{}, &scriptedLease{acquireResult: true}, 5)
+
+	w.sweepPending(context.Background())
+
+	if len(repo.deletedIDs) != 0 {
+		t.Fatalf("row must survive a failed object delete for retry, got %v", repo.deletedIDs)
+	}
+}
+
+func TestSweepPending_DeletesRowWhenObjectAlreadyGone(t *testing.T) {
+	repo := &fakeRepo{stale: []media.Media{{
+		ID:          "media-1",
+		UserID:      "user-1",
+		Status:      "pending",
+		OriginalURL: "https://cdn.example.com/raw/video/user-1/media-1",
+	}}}
+	storage := &fakeStorage{deleteErr: upload.ErrObjectNotFound}
+	w := testWorker(repo, storage, &fakeProcessor{}, &scriptedLease{acquireResult: true}, 5)
+
+	w.sweepPending(context.Background())
+
+	if len(repo.deletedIDs) != 1 {
+		t.Fatalf("a missing object must not block the row sweep, got %v", repo.deletedIDs)
 	}
 }

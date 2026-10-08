@@ -3,17 +3,22 @@ package r2
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"time"
 
+	"universal-media-service/core/upload"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type Client struct {
@@ -61,8 +66,12 @@ func NewClient(cfg Config) (*Client, error) {
 	})
 
 	uploader := manager.NewUploader(s3Client, func(u *manager.Uploader) {
-		u.PartSize = 100 * 1024 * 1024 // 100 MB per part
-		u.Concurrency = 4
+		// The manager buffers each in-flight part in memory. 16 MB parts with
+		// 2-way concurrency keep the peak at ~32 MB so the worker can push
+		// multi-hundred-MB outputs on a 512 Mi instance (the previous
+		// 100 MB x 4 configuration could buffer 400 MB at once).
+		u.PartSize = 16 * 1024 * 1024
+		u.Concurrency = 2
 	})
 
 	return &Client{
@@ -118,6 +127,85 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// DownloadTo streams an object into dst without buffering it in memory.
+func (c *Client) DownloadTo(ctx context.Context, key string, dst io.Writer) (int64, error) {
+	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return 0, translateNotFound(err)
+	}
+	defer out.Body.Close()
+	return io.Copy(dst, out.Body)
+}
+
+// Head returns the object's size without fetching its bytes.
+func (c *Client) Head(ctx context.Context, key string) (upload.ObjectInfo, error) {
+	out, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return upload.ObjectInfo{}, translateNotFound(err)
+	}
+	var size int64
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	return upload.ObjectInfo{Size: size}, nil
+}
+
+// GetRange reads at most length bytes starting at offset.
+func (c *Client) GetRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	if length <= 0 {
+		return nil, nil
+	}
+	rng := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
+	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+		Range:  &rng,
+	})
+	if err != nil {
+		return nil, translateNotFound(err)
+	}
+	defer out.Body.Close()
+	return io.ReadAll(io.LimitReader(out.Body, length))
+}
+
+// PresignPut returns a time-limited PUT URL for key that only accepts exactly
+// contentType (the value is part of the signature, so a client sending any
+// other Content-Type gets a signature mismatch).
+func (c *Client) PresignPut(ctx context.Context, key, contentType string, ttl time.Duration) (string, error) {
+	presigner := s3.NewPresignClient(c.s3Client)
+	out, err := presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:      &c.bucket,
+		Key:         &key,
+		ContentType: &contentType,
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+// translateNotFound maps S3 404 variants to upload.ErrObjectNotFound so the
+// core package's sentinel works across storage implementations.
+func translateNotFound(err error) error {
+	if err == nil {
+		return nil
+	}
+	var noSuchKey *types.NoSuchKey
+	var notFound *types.NotFound
+	var apiErr smithy.APIError
+	if errors.As(err, &noSuchKey) || errors.As(err, &notFound) ||
+		(errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey")) {
+		return upload.ErrObjectNotFound
+	}
+	return err
 }
 
 //nolint:unused

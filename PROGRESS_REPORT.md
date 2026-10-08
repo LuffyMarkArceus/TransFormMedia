@@ -114,6 +114,35 @@ Details that decide whether this is safe:
 
 **Sequencing opinion:** Phase 0 is a day of honesty and should not wait. Phase 1 is worth doing regardless of Phase 2 because it fixes in-request CPU/time pressure for every video, not just big ones. Phase 2 is the actual product decision — do it before advertising large video uploads, not after someone's 400 MB file fails. Skip Option B entirely; treat Option A as a spike whose result (stable or not) gets written into `LESSONS.md`.
 
+### Update — 2026-10-08: Phases 0, 1 and 2 implemented (backend + UI)
+
+Code complete, committed locally, not yet pushed/deployed.
+
+**Phase 1 — async path made real**
+- `MaxSyncProcessingSize` lowered 50 MB → **16 MiB**; worker `process()` now streams: `storage.DownloadTo` → temp file → `ProcessFile(ctx, inputPath, …)` → outputs streamed via `storage.Upload(os.File)`. `Process([]byte)` kept as a thin wrapper. R2 uploader tuned to PartSize 16 MB / Concurrency 2.
+- Acceptance run locally: 20.36 MB mp4 → multipart upload → `uploaded` → worker → `ready` in ~3 s, correct dimensions/duration, server RSS flat at 97 MB.
+
+**Phase 2 — presigned direct-to-R2**
+- New endpoints: `POST /api/v1/media/uploads` (Begin: validates family/declared size/quota, creates hidden `pending` row, returns `{id, uploadUrl, expiresIn}`) and `POST /api/v1/media/:id/complete` (Complete: `Head` size check → 512-byte family sniff → flips to `uploaded`, idempotent for completed rows).
+- New `pending` status: invisible to list/default queries; abandoned rows reaped by a worker sweeper (5 min tick, 2 h age, batch 50).
+- Quota: `USER_STORAGE_QUOTA_BYTES` (default 10 GiB) enforced at presign against `SUM(size_bytes)` over **all** the user's rows including trashed and pending (races accepted).
+- Caps as env config: `MAX_UPLOAD_BYTES` (500 MiB), `MAX_IMAGE_BYTES` (32 MiB).
+- Errors mapped: unsupported type/invalid request → 400, file too large → 413 (with cap in message), quota/not-started → 409, size/content mismatch → 400. Objects of mismatched uploads are deleted immediately.
+- Sniffing: `http.DetectContentType` misses mp4/mov/flac/mp3/aac (returns generic `application/octet-stream`), so `core/media/sniff.go` implements ffmpeg-compatible container detection used by **both** the multipart path and presign complete.
+- Acceptance: full local E2E against real Neon+R2 (happy path, content mismatch + purge, size mismatch, complete-before-PUT, pending hidden) plus a new QA suite — **31 passed / 0 failed / 1 skipped** locally.
+
+**Phase 0 — honest limits (UI)**
+- `lib/upload-limits.ts`: `MULTIPART_MAX_BYTES` 30 MB (GFE-safe), image 32 MB, video/audio 500 MB, per-file `precheckFile`.
+- `lib/api-error.ts`: non-JSON/HTML 413 → clear GFE message; new `presignPutErrorMessage` (status 0 = network/CORS wording).
+- Replace flow guarded at 30 MB and now surfaces real API errors instead of a generic toast.
+
+**Documented deviations**
+- **Presigned PUT does not bind Content-Type.** aws-sdk-go-v2 (s3 v1.95.1) signs only `host` for `PresignPutObject` even with `ContentType` set (`X-Amz-SignedHeaders=host`, verified: mismatched PUT returns 200). Enforcement therefore happens at Complete via the family-level sniff — a jpeg declared as `video/mp4` is rejected (400) and the object deleted (verified).
+- **Size check is one-directional by design:** actual > declared → 400 + object deleted; actual < declared is accepted (quota over-reserved in the safe direction, comment in `CompleteDirectUpload`).
+
+**Remaining before this can ship:** R2 bucket CORS for the browser PUT (token lacks `PutBucketCORS` — needs the dashboard or a wider token; curl QA unaffected), push + deploy (`--ephemeral-storage=2Gi`), post-deploy QA + SSE check, then a ≥500 MB prod E2E.
+
+
 ---
 
 ## 5. Known limitations & deliberate trade-offs

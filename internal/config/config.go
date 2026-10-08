@@ -15,6 +15,16 @@ type Config struct {
 	ShareTTL            int // seconds
 	WorkerRetryBaseSecs int // seconds; base backoff between processing attempts
 	WorkerMaxAttempts   int // attempts before an item is marked failed
+
+	// MaxUploadBytes caps one non-image file (also the multipart body cap's
+	// per-file side). Cloud Run's ~32 MB request limit makes anything much
+	// larger only reachable through the presigned direct-upload flow.
+	MaxUploadBytes int
+	// MaxImageBytes caps one image. Images are decoded synchronously, so
+	// this stays small.
+	MaxImageBytes int
+	// StorageQuotaBytes caps the total stored bytes per user.
+	StorageQuotaBytes int
 }
 
 func Load() *Config {
@@ -27,6 +37,9 @@ func Load() *Config {
 		ShareTTL:            604800, // 7 days default
 		WorkerRetryBaseSecs: envInt("WORKER_RETRY_BASE_SECONDS", 30),
 		WorkerMaxAttempts:   envInt("WORKER_MAX_ATTEMPTS", 5),
+		MaxUploadBytes:      envInt("MAX_UPLOAD_BYTES", 500*1024*1024),
+		MaxImageBytes:       envInt("MAX_IMAGE_BYTES", 32*1024*1024),
+		StorageQuotaBytes:   envInt("USER_STORAGE_QUOTA_BYTES", 10*1024*1024*1024),
 	}
 }
 

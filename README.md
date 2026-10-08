@@ -7,7 +7,7 @@ Upload, process, store, and share images, video, and audio through a Gin API wit
 | **Production** | https://media-server-qbo2eammia-uc.a.run.app (Cloud Run, `us-central1`, service `media-server`) |
 | **UI** | https://ums-media-forge-ui.vercel.app |
 | **Stack** | Go 1.25 · Gin · pgx/Neon · R2 (S3) · Redis (Upstash) · Clerk · ffmpeg |
-| **Last updated** | 2026-10-07 — see [`PROGRESS_REPORT.md`](PROGRESS_REPORT.md) for the full breakdown |
+| **Last updated** | 2026-10-08 — see [`PROGRESS_REPORT.md`](PROGRESS_REPORT.md) for the full breakdown |
 | **Size** | ~5.8k LOC Go, 35 commits, CI green on HEAD `e73cd74` |
 
 ## Status at a glance
@@ -23,7 +23,7 @@ Upload, process, store, and share images, video, and audio through a Gin API wit
 | Storage (R2) | 90% | No lifecycle policies yet |
 | Database (Postgres) | 95% | No versioning/audit trail |
 | Observability | 45% | Structured logs only — no metrics, tracing, or alerting |
-| Testing & QA | 65% | Unit tests + `-race`, 18-check QA script, manual E2E |
+| Testing & QA | 70% | Unit tests + `-race`, 32-check QA script, manual E2E |
 | Deployment & CI | 100% | Docker → Artifact Registry → Cloud Run; CI on every push |
 
 **Overall ≈ 90%.** Remaining work is prioritized in [`PROGRESS_REPORT.md`](PROGRESS_REPORT.md).
@@ -59,12 +59,17 @@ internal/config     env loading with fail-fast secret validation
 - [ ] Move `DATABASE_URL` / `SHARE_SECRET` into Secret Manager (currently plaintext env)
 
 ### Upload & media handling
-- [x] Multipart upload with `MaxBytesReader` guard (500 MB configured)
+- [x] Presigned direct-to-R2 uploads: `POST /media/uploads` → client PUTs straight to storage → `POST /media/:id/complete` verifies (size + family sniff) and enqueues processing — bypasses the ~32 MB request cap of Cloud Run's front end, up to 500 MB (`MAX_UPLOAD_BYTES`)
+- [x] Multipart upload with `MaxBytesReader` guard for the legacy/replace path; practical cap ~30 MB in prod (Google's front end returns an HTML 413 above 32 MB before the app sees the request)
+- [x] Per-user storage quota (`USER_STORAGE_QUOTA_BYTES`, default 10 GiB) enforced at presign time against all rows including pending/trashed
+- [x] Family-level content sniffing at complete (`core/media/sniff.go`, ffmpeg-compatible container detection) — declared vs stored type mismatches are rejected and the object deleted
+- [x] Abandoned `pending` uploads reaped by a worker sweeper (5 min tick, 2 h age)
+- [x] Streaming worker path: download to temp file → process → stream outputs (never buffers whole files; RSS stays flat)
 - [x] Streaming path for large bodies; MIME allow-list per type
 - [x] EXIF auto-orientation, metadata extraction
 - [x] Replace media in place (single row, fresh cache version)
 - [x] Soft delete (trash) → restore → permanent delete; batch delete
-- [x] Deferred (>50 MB) processing via worker — **not reachable in prod**: Cloud Run's front end rejects requests >32 MB with an HTML 413 before they reach the app (verified 2026-10-07)
+- [x] Deferred processing via worker — threshold `MaxSyncProcessingSize` is 16 MiB (was 50 MB, unreachable behind the GFE cap)
 
 ### Image processing
 - [x] Lanczos resize, crop with 9 gravities, quality, blur, grayscale
@@ -99,6 +104,8 @@ internal/config     env loading with fail-fast secret validation
 
 ```
 POST   /api/v1/media                    Upload media (multipart)
+POST   /api/v1/media/uploads             Begin presigned direct upload → { id, uploadUrl, expiresIn }
+POST   /api/v1/media/:id/complete        Verify presigned upload → enqueues worker
 PUT    /api/v1/media/:id                Replace media in place
 GET    /api/v1/media                    List (paginated, searchable, sortable)
 DELETE /api/v1/media/:id                Soft delete (trash)
@@ -142,12 +149,12 @@ gcloud run deploy media-server \
 ```bash
 go vet ./... && go build ./... && go test -race ./...   # matches CI (.github/workflows/ci.yml)
 
-# 18-check smoke suite against a running instance
+# 32-check smoke suite against a running instance
 API_BASE=https://media-server-qbo2eammia-uc.a.run.app \
 CLERK_TEST_TOKEN=<clerk session jwt> bash scripts/phase0-qa.sh
 ```
 
-Latest run (2026-10-07, production): **18 passed, 0 failed, 1 skipped** (optional 2-user IDOR case).
+Latest run (2026-10-08, local): **31 passed, 0 failed, 1 skipped** (optional 2-user IDOR case). Includes the presigned-flow suite: begin rejections (type/size/zero), pending rows hidden, complete-before-PUT 409, presigned PUT, complete → `uploaded`, content-mismatch purge, size-mismatch rejection.
 
 ## Quick start
 

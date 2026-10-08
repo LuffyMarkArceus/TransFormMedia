@@ -77,9 +77,8 @@ func (h *MediaUploadHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	const maxFileSize = 500 * 1024 * 1024
-	if fileHeader.Size > maxFileSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
+	if fileHeader.Size > h.service.Limits.MaxUploadBytes {
+		fileTooLarge(c, h.service.Limits.MaxUploadBytes)
 		return
 	}
 
@@ -100,9 +99,13 @@ func (h *MediaUploadHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	mimeType := normalizeContentType(http.DetectContentType(buf))
+	mimeType := normalizeContentType(sniffContentType(buf))
 	if !isSupportedMediaType(mimeType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
+		return
+	}
+	if maxBytes := h.service.MaxBytesFor(mimeType); fileHeader.Size > maxBytes {
+		fileTooLarge(c, maxBytes)
 		return
 	}
 
@@ -168,9 +171,8 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	const maxFileSize = 500 * 1024 * 1024
-	if fileHeader.Size > maxFileSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file size exceeds %d MB limit", maxFileSize/(1024*1024))})
+	if fileHeader.Size > h.service.Limits.MaxUploadBytes {
+		fileTooLarge(c, h.service.Limits.MaxUploadBytes)
 		return
 	}
 
@@ -191,9 +193,13 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	mimeType := normalizeContentType(http.DetectContentType(buf))
+	mimeType := normalizeContentType(sniffContentType(buf))
 	if !isSupportedMediaType(mimeType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported file type"})
+		return
+	}
+	if maxBytes := h.service.MaxBytesFor(mimeType); fileHeader.Size > maxBytes {
+		fileTooLarge(c, maxBytes)
 		return
 	}
 
@@ -210,7 +216,64 @@ func (h *MediaUploadHandler) Upload(c *gin.Context) {
 		if respondProcessingError(c, err) {
 			return
 		}
+		if respondMediaError(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload media"})
+		return
+	}
+
+	c.JSON(http.StatusOK, m)
+}
+
+// BeginUpload starts a direct-to-R2 upload: it validates the declared file,
+// reserves quota, and returns the media ID plus a presigned PUT URL. The row
+// stays "pending" (invisible, swept if abandoned) until CompleteUpload runs.
+func (h *MediaUploadHandler) BeginUpload(c *gin.Context) {
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req upload.BeginUploadRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+
+	mediaID, uploadURL, err := h.service.BeginDirectUpload(c.Request.Context(), userID, req)
+	if err != nil {
+		log.Printf("BeginUpload Error: %v", err)
+		if respondMediaError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to begin upload"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":        mediaID,
+		"uploadUrl": uploadURL,
+		"expiresIn": 1800,
+	})
+}
+
+// CompleteUpload verifies the object the client PUT to R2 and flips the row
+// to "uploaded", which enqueues worker processing.
+func (h *MediaUploadHandler) CompleteUpload(c *gin.Context) {
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	m, err := h.service.CompleteDirectUpload(c.Request.Context(), userID, c.Param("id"))
+	if err != nil {
+		log.Printf("CompleteUpload Error: %v", err)
+		if respondMediaError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete upload"})
 		return
 	}
 

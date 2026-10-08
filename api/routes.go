@@ -31,7 +31,11 @@ func RegisterRoutes(r *gin.Engine, mediaHandler *http.MediaUploadHandler, mediaL
 		v1.Use(floodLimiter.IPMiddleware())
 
 		v1.POST("/media", protected(mediaHandler.Upload)...)
+		// Presigned direct upload: static segment registered alongside the
+		// :id routes below (gin allows static+param siblings).
+		v1.POST("/media/uploads", protected(mediaHandler.BeginUpload)...)
 		v1.PUT("/media/:id", protected(mediaHandler.Replace)...)
+		v1.POST("/media/:id/complete", protected(mediaHandler.CompleteUpload)...)
 		v1.GET("/media", protected(mediaListHandler.List)...)
 		v1.DELETE("/media/:id", protected(mediaHandler.Delete)...)
 		v1.DELETE("/media/:id/permanent", protected(mediaHandler.PermanentDelete)...)

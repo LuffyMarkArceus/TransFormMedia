@@ -71,7 +71,11 @@ func main() {
 	db := neondb.New()
 
 	mediaRepo := media.NewPostgresRepository(db)
-	uploadService := upload.NewService(mediaRepo, r2Client)
+	uploadService := upload.NewService(mediaRepo, r2Client, upload.WithLimits(upload.Limits{
+		MaxUploadBytes:    int64(appCfg.MaxUploadBytes),
+		MaxImageBytes:     int64(appCfg.MaxImageBytes),
+		StorageQuotaBytes: int64(appCfg.StorageQuotaBytes),
+	}))
 
 	var cacheClient cacheGetter
 	var leaseStore worker.LeaseStore = worker.NewMemLeaseStore(time.Duration(appCfg.WorkerRetryBaseSecs) * time.Second)

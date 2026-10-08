@@ -1,6 +1,18 @@
 package http
 
-import "strings"
+import (
+	"strings"
+
+	"universal-media-service/core/media"
+)
+
+// sniffContentType identifies the canonical MIME type of the first bytes of
+// an upload. It uses the service's sniffer (not net/http's), which recognises
+// quicktime/m4a/flac/aac/ogg/wav/avi and mp4 brands Go's default detector
+// rejects — see core/media/sniff.go. Returns "" for non-media bytes.
+func sniffContentType(buf []byte) string {
+	return media.DetectContentType(buf)
+}
 
 // normalizeContentType maps sniffed/browser MIME values to canonical types used by processors.
 func normalizeContentType(mimeType string) string {

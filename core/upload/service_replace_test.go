@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"io"
 	"testing"
+	"time"
 
 	"universal-media-service/core/media"
 )
@@ -73,6 +74,10 @@ func (r *replaceRepo) UpdateContent(_ context.Context, m *media.Media) error {
 	r.updatedContents = append(r.updatedContents, &cp)
 	return nil
 }
+func (r *replaceRepo) SumSizeByUser(context.Context, string) (int64, error) { return 0, nil }
+func (r *replaceRepo) ListStalePending(context.Context, time.Time, int) ([]media.Media, error) {
+	return nil, nil
+}
 
 // replaceStorage records uploads and deletes by key.
 type replaceStorage struct {
@@ -89,6 +94,18 @@ func (s *replaceStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 func (s *replaceStorage) Get(context.Context, string) ([]byte, error) { return nil, nil }
+func (s *replaceStorage) DownloadTo(context.Context, string, io.Writer) (int64, error) {
+	return 0, nil
+}
+func (s *replaceStorage) Head(context.Context, string) (ObjectInfo, error) {
+	return ObjectInfo{}, ErrObjectNotFound
+}
+func (s *replaceStorage) GetRange(context.Context, string, int64, int64) ([]byte, error) {
+	return nil, ErrObjectNotFound
+}
+func (s *replaceStorage) PresignPut(context.Context, string, string, time.Duration) (string, error) {
+	return "https://cdn.example.com/presigned", nil
+}
 func (s *replaceStorage) PublicBaseURL() string {
 	return "https://cdn.example.com"
 }
